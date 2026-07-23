@@ -1,0 +1,12 @@
+{
+  "_comment": "Add this object to the `modules` array of module-catalog.json in charlesvestal/schwung (open a PR) so PrePiano appears in the Module Store. Fields follow docs/MODULES.md 'Publishing to Module Store'.",
+  "id": "prepiano",
+  "name": "PrePiano",
+  "description": "Physically-modelled, preparable piano: felt, bowing, gauge, hammer, sympathetic resonance, and prepared-piano disturbance.",
+  "author": "soundsubs",
+  "component_type": "sound_generator",
+  "github_repo": "soundsubs/prepiano",
+  "default_branch": "main",
+  "asset_name": "prepiano-module.tar.gz",
+  "min_host_version": "0.0.0"
+}

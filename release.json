@@ -1,0 +1,9 @@
+{
+  "id": "prepiano",
+  "name": "PrePiano",
+  "version": "0.1.0",
+  "component_type": "sound_generator",
+  "asset_name": "prepiano-module.tar.gz",
+  "url": "https://github.com/soundsubs/prepiano/releases/latest/download/prepiano-module.tar.gz",
+  "min_host_version": "0.0.0"
+}

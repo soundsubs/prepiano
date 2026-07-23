@@ -1,0 +1,48 @@
+name: release
+
+# Publish an installable Schwung module tarball whenever a version tag is pushed.
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM64 toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Fetch Schwung host headers
+        run: |
+          # The authoritative host/plugin_api_v1.h lives in the Schwung tree.
+          # If the checkout succeeds we build against it; otherwise we fall
+          # back to the bundled reference stub in src/host/.
+          git clone --depth 1 https://github.com/charlesvestal/schwung.git schwung \
+            || echo "schwung checkout failed; using bundled stub"
+
+      - name: Cross-compile & package module
+        run: |
+          if [ -f schwung/src/host/plugin_api_v1.h ]; then
+            export SCHWUNG_SRC=schwung/src
+            echo "Building against real Schwung headers"
+          else
+            echo "Building against bundled reference stub"
+          fi
+          bash scripts/build_move.sh
+
+      - name: Stage release asset
+        run: cp build/prepiano-module.tar.gz prepiano-module.tar.gz
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: prepiano-module.tar.gz
+          generate_release_notes: true
+          fail_on_unmatched_files: true

@@ -1,0 +1,34 @@
+name: ci
+
+# Build verification on every push / PR: the desktop renderer, the host-native
+# plugin build (against the reference stub), and the ARM64 cross-compile.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Desktop build + render demo
+        run: bash scripts/build_desktop.sh
+      - name: Plugin sanity build (stub ABI)
+        run: make plugin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prepiano-demo-wav
+          path: build/prepiano_demo.wav
+
+  arm64-cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ARM64 toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Cross-compile module
+        run: |
+          git clone --depth 1 https://github.com/charlesvestal/schwung.git schwung || true
+          if [ -f schwung/src/host/plugin_api_v1.h ]; then export SCHWUNG_SRC=schwung/src; fi
+          bash scripts/build_move.sh

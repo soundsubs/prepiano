@@ -1,5 +1,8 @@
 # PrePiano
 
+[![ci](https://github.com/soundsubs/prepiano/actions/workflows/ci.yml/badge.svg)](https://github.com/soundsubs/prepiano/actions/workflows/ci.yml)
+[![release](https://github.com/soundsubs/prepiano/actions/workflows/release.yml/badge.svg)](https://github.com/soundsubs/prepiano/actions/workflows/release.yml)
+
 A physically-modelled, *preparable* piano for Ableton Move (Schwung), with a
 VST3 build to follow. Struck-string waveguide synthesis you can mute with felt,
 bow, re-hammer, and "prepare" — lay virtual knives, forks and screws across the
@@ -9,6 +12,18 @@ Built to sit alongside [`soundsubs/noizboy`](https://github.com/soundsubs/noizbo
 and [`soundsubs/drmach`](https://github.com/soundsubs/drmach): one portable C
 DSP core, a Schwung v2 plugin wrapper, and a desktop WAV renderer for
 sound-design iteration.
+
+## Hear it
+
+[![PrePiano demo waveform](assets/prepiano_demo.png)](assets/prepiano_demo.mp3)
+
+▶ **[Play the 23-second demo tour](assets/prepiano_demo.mp3)** — felt piano →
+muted → bowed → heavy gauge + metal hammer → prepared → sympathetic + distant
+reverb → mono RNDMZ patch.
+
+> GitHub doesn't auto-play audio inside a README. For an inline player on the
+> repo page, open the README in GitHub's web editor and drag
+> `assets/prepiano_demo.mp3` into it — GitHub uploads it and inserts a player.
 
 ```
 prepiano/
@@ -73,6 +88,27 @@ SCHWUNG_SRC=../schwung/src MOVE_HOST=move.local DEPLOY=1 ./scripts/build_move.sh
 Rescan from the Module Manager (`http://move.local:7700`) or re-enter Schwung
 to load **PrePiano**. Requires the Schwung framework installed on the device —
 see [charlesvestal/schwung](https://github.com/charlesvestal/schwung).
+
+## Releases & the Module Store
+
+Pushing a version tag builds and publishes an installable module tarball
+automatically:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0        # -> Actions builds prepiano-module.tar.gz and cuts a Release
+```
+
+`.github/workflows/release.yml` cross-compiles the ARM64 `dsp.so`, packages the
+module, and attaches `prepiano-module.tar.gz` to a GitHub Release.
+`release.json` on `main` always points at the latest release asset.
+
+To make PrePiano installable directly from the Schwung **Module Store**, open a
+PR adding the entry in [`docs/schwung-catalog-entry.json`](docs/schwung-catalog-entry.json)
+to `module-catalog.json` in
+[charlesvestal/schwung](https://github.com/charlesvestal/schwung). Until then,
+install the tarball manually: download it from Releases, extract into
+`/data/UserData/schwung/modules/` on the device, and rescan.
 
 ### About `src/host/plugin_api_v1.h`
 

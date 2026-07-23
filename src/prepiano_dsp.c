@@ -97,6 +97,7 @@ typedef struct {
     float damp_z;          /* one-pole lowpass (string damping) state       */
     float ap_z;            /* first-order allpass (dispersion) state        */
     float ap_x;            /* allpass input history                         */
+    float dc_x, dc_y;      /* DC blocker in the feedback path               */
 
     /* per-voice tuned amounts (captured at note-on from global knobs) */
     float loop_gain;       /* < 1, sets decay                              */
@@ -166,6 +167,9 @@ struct pp_state {
     float symp_send;
 
     pp_reverb_t rvb;
+
+    /* master DC blocker (belt-and-suspenders after the reverb) */
+    float dcx_l, dcy_l, dcx_r, dcy_r;
 
     uint32_t rng;          /* master RNG (note-on randomisation, RNDMZ)    */
 };
@@ -284,6 +288,7 @@ static float mtof(int note) {   /* MIDI note -> Hz */
 static void voice_silence(pp_voice_t *v) {
     v->active = 0; v->held = 0;
     v->damp_z = v->ap_z = v->ap_x = 0.0f;
+    v->dc_x = v->dc_y = 0.0f;
     v->exc_len = 0; v->exc_lp = 0.0f; v->bow_lp = 0.0f;
     memset(v->buf, 0, sizeof(v->buf));
     for (int i = 0; i < PP_MAX_PREP; i++) v->prep[i].active = 0;
@@ -466,6 +471,14 @@ static inline float voice_tick(pp_state_t *st, pp_voice_t *v, float *symp_in) {
     }
 
     /* one-shot hammer energy already sits in the buffer; nothing to add here */
+
+    /* DC blocker in the feedback path: the bow nonlinearity and asymmetric
+     * excitation can otherwise latch a DC bias into the waveguide. R=0.999
+     * -> ~7 Hz corner, well below the lowest note. */
+    float hp = loop - v->dc_x + 0.999f * v->dc_y;
+    v->dc_x = loop;
+    v->dc_y = hp;
+    loop = hp;
 
     /* write back into the delay line */
     v->buf[v->widx] = loop;
@@ -656,8 +669,13 @@ void pp_render_float(pp_state_t *st, float *out_l, float *out_r, int n) {
 
         float l, r;
         reverb_process(&st->rvb, mix_l, mix_r, st->p[PP_P_REVERB], &l, &r);
-        out_l[f] = l * 0.9f;
-        out_r[f] = r * 0.9f;
+
+        /* master DC blocker */
+        float hl = l - st->dcx_l + 0.999f * st->dcy_l; st->dcx_l = l; st->dcy_l = hl;
+        float hr = r - st->dcx_r + 0.999f * st->dcy_r; st->dcx_r = r; st->dcy_r = hr;
+
+        out_l[f] = hl * 1.7f;
+        out_r[f] = hr * 1.7f;
     }
 }
 
