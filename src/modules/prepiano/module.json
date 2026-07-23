@@ -1,14 +1,17 @@
 {
   "id": "prepiano",
   "name": "PrePiano",
-  "version": "0.1.1",
-  "api_version": 2,
   "abbrev": "PPNO",
+  "version": "0.1.2",
   "description": "Physically-modelled, preparable piano. Felt, bowing, gauge, hammer, sympathetic resonance, and prepared-piano disturbance.",
   "author": "soundsubs",
+  "dsp": "dsp.so",
+  "api_version": 2,
   "capabilities": {
     "audio_out": true,
+    "audio_in": false,
     "midi_in": true,
+    "midi_out": false,
     "chainable": true,
     "component_type": "sound_generator",
     "chain_params": [
@@ -20,36 +23,32 @@
       { "key": "symp",    "name": "Symp",    "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.25 },
       { "key": "disturb", "name": "Disturb", "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.00 },
       { "key": "reverb",  "name": "Reverb",  "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.25 }
-    ]
-  },
-  "ui_hierarchy": {
-    "levels": {
-      "root": {
-        "name": "PrePiano",
-        "params": [
-          { "key": "felt",    "name": "Felt",    "type": "float", "min": 0, "max": 1, "step": 0.01 },
-          { "key": "attack",  "name": "Attack",  "type": "float", "min": 0, "max": 1, "step": 0.01 },
-          { "key": "decay",   "name": "Decay",   "type": "float", "min": 0, "max": 1, "step": 0.01 },
-          { "key": "gauge",   "name": "Gauge",   "type": "float", "min": 0, "max": 1, "step": 0.01 },
-          { "key": "hammer",  "name": "Hammer",  "type": "float", "min": 0, "max": 1, "step": 0.01 },
-          { "key": "symp",    "name": "Symp",    "type": "float", "min": 0, "max": 1, "step": 0.01 },
-          { "key": "disturb", "name": "Disturb", "type": "float", "min": 0, "max": 1, "step": 0.01 },
-          { "key": "reverb",  "name": "Reverb",  "type": "float", "min": 0, "max": 1, "step": 0.01 },
-          { "level": "menu", "label": "Voicing" }
-        ],
-        "knobs": ["felt", "attack", "decay", "gauge", "hammer", "symp", "disturb", "reverb"]
-      },
-      "menu": {
-        "name": "Voicing",
-        "params": [
-          { "key": "poly", "name": "Polyphony", "type": "enum",
-            "options": ["16", "12", "8", "6", "4", "3", "2", "1 (mono)"],
-            "values":  ["16", "12", "8", "6", "4", "3", "2", "1"] },
-          { "key": "rndmz", "name": "RNDMZ", "type": "enum",
-            "options": ["—", "Randomize!"],
-            "values":  ["0", "1"] }
-        ],
-        "knobs": ["poly"]
+    ],
+    "ui_hierarchy": {
+      "levels": {
+        "root": {
+          "name": "PrePiano",
+          "params": [
+            { "key": "felt",    "label": "Felt",    "type": "float", "min": 0.0, "max": 1.0, "default": 0.25, "step": 0.01, "unit": "%" },
+            { "key": "attack",  "label": "Attack",  "type": "float", "min": 0.0, "max": 1.0, "default": 0.00, "step": 0.01, "unit": "%" },
+            { "key": "decay",   "label": "Decay",   "type": "float", "min": 0.0, "max": 1.0, "default": 0.55, "step": 0.01, "unit": "%" },
+            { "key": "gauge",   "label": "Gauge",   "type": "float", "min": 0.0, "max": 1.0, "default": 0.20, "step": 0.01, "unit": "%" },
+            { "key": "hammer",  "label": "Hammer",  "type": "float", "min": 0.0, "max": 1.0, "default": 0.40, "step": 0.01, "unit": "%" },
+            { "key": "symp",    "label": "Symp",    "type": "float", "min": 0.0, "max": 1.0, "default": 0.25, "step": 0.01, "unit": "%" },
+            { "key": "disturb", "label": "Disturb", "type": "float", "min": 0.0, "max": 1.0, "default": 0.00, "step": 0.01, "unit": "%" },
+            { "key": "reverb",  "label": "Reverb",  "type": "float", "min": 0.0, "max": 1.0, "default": 0.25, "step": 0.01, "unit": "%" },
+            { "level": "voicing", "label": "Voicing" }
+          ],
+          "knobs": ["felt", "attack", "decay", "gauge", "hammer", "symp", "disturb", "reverb"]
+        },
+        "voicing": {
+          "name": "Voicing",
+          "params": [
+            { "key": "poly",  "label": "Polyphony", "type": "enum", "options": ["16", "12", "8", "6", "4", "3", "2", "1 (mono)"], "default": 0 },
+            { "key": "rndmz", "label": "RNDMZ",     "type": "enum", "options": ["Ready", "Randomize!"], "default": 0 }
+          ],
+          "navigate_to": "root"
+        }
       }
     }
   }

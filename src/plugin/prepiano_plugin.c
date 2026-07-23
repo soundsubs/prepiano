@@ -94,6 +94,24 @@ static void plug_set_param(void *instance, const char *key, const char *val) {
     if (!in) return;
     int id = key_to_id(key);
     if (id < 0) return;
+
+    /* The Voicing menu entries are enums, which the host delivers as the
+     * selected option's INDEX (matching Schwung's index-based enum default). */
+    if (id == PP_P_POLYPHONY) {
+        static const int counts[8] = { 16, 12, 8, 6, 4, 3, 2, 1 };
+        int idx = val ? atoi(val) : 0;
+        if (idx < 0) idx = 0;
+        if (idx > 7) idx = 7;
+        pp_set_param(in->dsp, PP_P_POLYPHONY, (float)counts[idx]);
+        return;
+    }
+    if (id == PP_P_RNDMZ) {
+        int idx = val ? atoi(val) : 0;         /* 0 = "Ready", 1 = "Randomize!" */
+        pp_set_param(in->dsp, PP_P_RNDMZ, idx >= 1 ? 1.0f : 0.0f);
+        return;
+    }
+
+    /* Continuous knobs arrive as a float in the param's declared 0..1 range. */
     float v = val ? (float)atof(val) : 0.0f;
     pp_set_param(in->dsp, (pp_param_t)id, v);
 }
