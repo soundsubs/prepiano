@@ -2,7 +2,7 @@
   "id": "prepiano",
   "name": "PrePiano",
   "abbrev": "PPNO",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Physically-modelled, preparable piano. Felt, bowing, gauge, hammer, sympathetic resonance, and prepared-piano disturbance.",
   "author": "soundsubs",
   "dsp": "dsp.so",

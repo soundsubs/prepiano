@@ -83,11 +83,11 @@ int main(int argc, char **argv) {
     for (int i=0;i<4;i++){ ON(arp[i],110); render(st,0.28f); OFF(arp[i]); }
     render(st,0.5f);
 
-    /* 3) attack -> bowed */
-    section("3. ATTACK high -> bowed / sustaining");
-    K(PP_P_FELT,0.15f); K(PP_P_ATTACK,0.9f); K(PP_P_DECAY,0.7f);
-    ON(62,100); render(st,1.4f); OFF(62); render(st,0.7f);
-    ON(57,100);ON(64,100); render(st,1.4f); OFF(57);OFF(64); render(st,0.7f);
+    /* 3) attack -> gentle-bow amplitude swell (0..5 s) */
+    section("3. ATTACK high -> gentle-bow swell (slow fade-in)");
+    K(PP_P_FELT,0.15f); K(PP_P_ATTACK,0.95f); K(PP_P_DECAY,0.8f);
+    ON(57,100);ON(64,100); render(st,4.5f);           /* swells in over ~4.5s */
+    OFF(57);OFF(64); render(st,1.0f);
 
     /* 4) heavy gauge + metal hammer -> big, inharmonic, bell-like */
     section("4. GAUGE + HAMMER high -> heavy strings, metal striker");
@@ -95,6 +95,14 @@ int main(int argc, char **argv) {
     for (int i=0;i<4;i++){ ON(arp[i]-12,110); render(st,0.4f); }
     for (int i=0;i<4;i++) OFF(arp[i]-12);
     render(st,1.5f);
+
+    /* 4b) stringing by register: low mono bass -> rich trichord treble */
+    section("4b. STRINGS by register: bass (1) -> mid (2) -> treble (3)");
+    K(PP_P_GAUGE,0.2f); K(PP_P_HAMMER,0.4f); K(PP_P_DECAY,0.85f); K(PP_P_REVERB,0.2f);
+    int reg[5] = {24, 33, 45, 60, 79};   /* mono, bi, tri, tri, tri */
+    for (int i=0;i<5;i++){ ON(reg[i],100); render(st,0.7f); }
+    for (int i=0;i<5;i++) OFF(reg[i]);
+    render(st,2.5f);                     /* let the unisons beat/shimmer */
 
     /* 5) prepared! disturb high -> knives/forks/spoons rattle */
     section("5. DISTURB high -> prepared piano (rattle/buzz)");

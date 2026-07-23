@@ -79,45 +79,68 @@ typedef struct {
 } pp_prep_t;
 
 /* ----------------------------------------------------------------------- *
- *  Voice (one struck string)
+ *  A single string (one delay line). Real piano notes have 1..3 unison
+ *  strings per note; each is a slightly-detuned copy of this.
+ * ----------------------------------------------------------------------- */
+#define PP_MAX_STRINGS 3
+typedef struct {
+    float buf[PP_DELAY_MAX];
+    int   widx;
+    float delay;           /* fractional delay (detuned per string)        */
+    float gain;            /* per-string loop gain (aftersound spread)     */
+    float damp_z;          /* one-pole lowpass (string damping) state      */
+    float ap_z, ap_x;      /* first-order allpass (dispersion) state       */
+    float dc_x, dc_y;      /* DC blocker in the feedback path              */
+} pp_string_t;
+
+/* ----------------------------------------------------------------------- *
+ *  Voice (one struck note: a course of 1..3 unison strings)
  * ----------------------------------------------------------------------- */
 typedef struct {
     int   active;
     int   note;
     int   age;             /* for voice stealing (older = higher)          */
+    int   quiet;           /* consecutive near-silent samples (for culling)*/
     float vel;             /* 0..1                                          */
     float freq;
 
-    /* waveguide delay line */
-    float buf[PP_DELAY_MAX];
-    int   widx;
-    float delay;           /* fractional delay in samples                  */
+    pp_string_t str[PP_MAX_STRINGS];
+    int   nstr;            /* 1 (bass) .. 3 (treble) unison strings        */
+    float out_scale;       /* level normalisation for the string count     */
 
-    /* loop filters */
-    float damp_z;          /* one-pole lowpass (string damping) state       */
-    float ap_z;            /* first-order allpass (dispersion) state        */
-    float ap_x;            /* allpass input history                         */
-    float dc_x, dc_y;      /* DC blocker in the feedback path               */
-
-    /* per-voice tuned amounts (captured at note-on from global knobs) */
-    float loop_gain;       /* < 1, sets decay                              */
+    /* shared string coefficients (same across the course) */
+    float loop_gain;       /* base < 1, sets decay (string 0)             */
     float damp_coef;       /* 0..~0.95, string brightness/felt            */
     float disp_coef;       /* allpass coefficient, string stiffness       */
     float pan_l, pan_r;    /* equal-power keyboard pan gains              */
 
+    /* amplitude attack envelope (gentle-bow swell, 0..~5 s) */
+    float amp_env;         /* current gain, ramps 0 -> 1                  */
+    float amp_inc;         /* per-sample increment                        */
+
     /* excitation */
-    int   exc_len;         /* remaining samples of the hammer burst        */
-    float exc_lp;          /* hammer noise colouring state                 */
+    int   exc_len;         /* hammer burst length in samples               */
     float exc_gain;
     float bow_amt;         /* 0 = pluck, 1 = sustained bow                 */
     float bow_lp;          /* bow noise colouring                          */
     int   held;            /* note is still down (bow keeps exciting)      */
 
-    /* preparation objects attached to this string */
+    /* preparation objects (applied to the main string of the course) */
     pp_prep_t prep[PP_MAX_PREP];
 
     uint32_t rng;
 } pp_voice_t;
+
+/* How many unison strings a note has, by register (realistic piano scaling):
+ *   monochord (1)  : lowest bass, ~A0..E1
+ *   bichord   (2)  : upper bass,  ~F1..D#2
+ *   trichord  (3)  : tenor+treble, ~E2 and up
+ * Exact break notes vary by instrument; these are typical. */
+static int strings_for_note(int note) {
+    if (note <= 28) return 1;   /* .. E1  */
+    if (note <= 39) return 2;   /* .. D#2 */
+    return 3;                   /* E2 ..  */
+}
 
 /* ----------------------------------------------------------------------- *
  *  Sympathetic resonator bank (a set of undamped-ish open strings)
@@ -297,19 +320,34 @@ static void voice_update_tone(pp_state_t *st, pp_voice_t *v) {
 
     v->damp_coef = pp_clampf(0.15f + 0.75f * felt + 0.15f * gauge, 0.0f, 0.93f);
 
-    float t60 = pp_lerp(0.15f, 18.0f, decay * decay);
+    /* Decay knob -> ring time. The in-loop damping filter removes energy on
+     * top of the loop gain, so we aim the raw T60 a bit high (~14 s) to land a
+     * ~10 s audible tail at full Decay. Felt shortens it. */
+    float t60 = pp_lerp(0.08f, 14.0f, decay * decay);
     t60 *= pp_lerp(1.0f, 0.12f, felt);
-    float delay_s = v->delay / st->sr;
+    float delay_s = v->str[0].delay / st->sr;
     float g = powf(10.0f, -3.0f * delay_s / t60);
-    v->loop_gain = pp_clampf(g, 0.0f, 0.99995f);
+    g = pp_clampf(g, 0.0f, 0.99995f);
+    v->loop_gain = g;
+
+    /* Companion strings ring a touch longer than the struck main string -> the
+     * piano's characteristic "double decay" / aftersound as the course beats. */
+    static const float after[PP_MAX_STRINGS] = { 0.0f, 0.10f, 0.18f };
+    for (int i = 0; i < v->nstr; i++)
+        v->str[i].gain = pp_clampf(g + (1.0f - g) * after[i], 0.0f, 0.99995f);
 }
 
 static void voice_silence(pp_voice_t *v) {
-    v->active = 0; v->held = 0;
-    v->damp_z = v->ap_z = v->ap_x = 0.0f;
-    v->dc_x = v->dc_y = 0.0f;
-    v->exc_len = 0; v->exc_lp = 0.0f; v->bow_lp = 0.0f;
-    memset(v->buf, 0, sizeof(v->buf));
+    v->active = 0; v->held = 0; v->quiet = 0;
+    v->bow_lp = 0.0f; v->exc_len = 0;
+    v->amp_env = 1.0f; v->amp_inc = 1.0f;
+    v->nstr = 1; v->out_scale = 1.0f;
+    for (int sidx = 0; sidx < PP_MAX_STRINGS; sidx++) {
+        pp_string_t *s = &v->str[sidx];
+        s->widx = 0; s->delay = 100.0f; s->gain = 0.0f;
+        s->damp_z = s->ap_z = s->ap_x = s->dc_x = s->dc_y = 0.0f;
+        memset(s->buf, 0, sizeof(s->buf));
+    }
     for (int i = 0; i < PP_MAX_PREP; i++) v->prep[i].active = 0;
 }
 
@@ -345,25 +383,73 @@ static void voice_configure(pp_state_t *st, pp_voice_t *v, int note, int vel) {
     float freq = v->freq * (1.0f - 0.010f * gauge);
     float gd_lp = v->damp_coef / (1.0f - v->damp_coef);   /* one-pole grp delay */
     float gd_ap = 2.0f * (-v->disp_coef);                 /* allpass grp delay  */
-    v->delay = st->sr / freq - 1.0f - gd_lp - gd_ap;
-    if (v->delay < 2.0f)  v->delay = 2.0f;
-    if (v->delay > (float)(PP_DELAY_MAX - 2)) v->delay = (float)(PP_DELAY_MAX - 2);
-
-    /* --- decay / brightness (loop gain + damping) ---
-     * Derived from Felt/Decay/Gauge; recomputed live when those knobs move. */
-    voice_update_tone(st, v);
+    float base_delay = st->sr / freq - 1.0f - gd_lp - gd_ap;
+    if (base_delay < 2.0f)  base_delay = 2.0f;
+    if (base_delay > (float)(PP_DELAY_MAX - 2)) base_delay = (float)(PP_DELAY_MAX - 2);
 
     /* --- hammer excitation ---
      * Contact time: soft felt hammer = longer, rounder; metal = short click.
      * Brightness of the burst rises with the hammer knob and with velocity. */
     float contact_ms = pp_lerp(6.0f, 0.8f, hammer);     /* felt->metal */
     v->exc_len = (int)(contact_ms * 0.001f * st->sr) + 1;
-    v->exc_lp  = 0.0f;
     /* heavier gauge is "harder to strike": same key effort -> less energy in */
     v->exc_gain = (0.35f + 0.65f * v->vel) * pp_lerp(1.0f, 0.6f, gauge);
 
-    /* --- keyboard panning: low strings sit left, high strings right, like
-     * sitting at the instrument. Subtle (+-~0.35) and equal-power. --- */
+    /* --- unison strings for this note (1 bass .. 3 treble), each detuned a
+     * couple of cents so the course beats -> shimmer + double-decay. --- */
+    v->nstr = strings_for_note(note);
+    if (v->nstr < 1) v->nstr = 1;
+    if (v->nstr > PP_MAX_STRINGS) v->nstr = PP_MAX_STRINGS;
+    v->out_scale = 1.0f / sqrtf((float)v->nstr);
+
+    static const float cents3[3] = { 0.0f, 2.5f, -2.5f };
+    static const float cents2[2] = { 0.0f, 2.8f };
+    float hammer_lp = pp_lerp(0.85f, 0.05f, hammer); /* soft=darker burst */
+
+    for (int sidx = 0; sidx < v->nstr; sidx++) {
+        pp_string_t *s = &v->str[sidx];
+        float cents = (v->nstr == 3) ? cents3[sidx]
+                    : (v->nstr == 2) ? cents2[sidx] : 0.0f;
+        float sd = base_delay * powf(2.0f, -cents / 1200.0f);
+        if (sd < 2.0f) sd = 2.0f;
+        if (sd > (float)(PP_DELAY_MAX - 2)) sd = (float)(PP_DELAY_MAX - 2);
+        s->delay = sd;
+        int N = (int)sd + 1; if (N > PP_DELAY_MAX) N = PP_DELAY_MAX;
+        /* write pointer one delay ahead so the read traverses the burst first */
+        s->widx = (int)sd; if (s->widx >= PP_DELAY_MAX) s->widx = PP_DELAY_MAX - 1;
+        int burst = v->exc_len < N ? v->exc_len : N;
+        float lp = 0.0f;
+        for (int i = 0; i < PP_DELAY_MAX; i++) s->buf[i] = 0.0f;
+        for (int i = 0; i < N; i++) {
+            float e = 0.0f;
+            if (i < burst) {
+                float w = 0.5f - 0.5f * cosf(2.0f * (float)M_PI * i / burst);
+                float nz = pp_frand_bi(&v->rng);       /* per-string -> decorrelated */
+                lp = pp_lerp(nz, lp, hammer_lp);
+                float click = (i < 2) ? (hammer * (1.0f - hammer_lp)) : 0.0f;
+                e = (lp + click) * w;
+            }
+            s->buf[i] = e * v->exc_gain;
+        }
+        s->damp_z = s->ap_z = s->ap_x = s->dc_x = s->dc_y = 0.0f;
+    }
+
+    /* --- decay / brightness (loop gain + damping + per-string aftersound) ---
+     * Derived from Felt/Decay/Gauge; recomputed live when those knobs move. */
+    voice_update_tone(st, v);
+
+    /* --- Attack: gentle-bow amplitude swell. The knob sets a fade-in time
+     * from 0 up to ~5 s, on top of the pluck->bow excitation morph. --- */
+    float attack_s = attack * 5.0f;
+    if (attack_s < 0.004f) {
+        v->amp_env = 1.0f; v->amp_inc = 1.0f;           /* instant (plucked) */
+    } else {
+        v->amp_env = 0.0f; v->amp_inc = 1.0f / (attack_s * st->sr);
+    }
+    v->bow_amt = attack;   /* higher attack also drives the sustained bow */
+    v->bow_lp  = 0.0f;
+
+    /* --- keyboard panning: low strings sit left, high strings right. --- */
     {
         float t = pp_clampf((note - 21) / 87.0f, 0.0f, 1.0f);  /* A0..C8 */
         float pan = (t - 0.5f) * 0.7f;                         /* -0.35..0.35 */
@@ -372,18 +458,11 @@ static void voice_configure(pp_state_t *st, pp_voice_t *v, int note, int vel) {
         v->pan_r = sinf(ang);
     }
 
-    /* --- attack morph: pluck (0) -> bow (1) ---
-     * A bow keeps feeding the string while the key is held and rings on. */
-    v->bow_amt = attack;
-    v->bow_lp  = 0.0f;
-
-    /* --- preparation objects laid on this specific string ---
-     * disturb sets how many prepared sources exist system-wide; each struck
-     * string randomly gets some of them, with random rattle character. */
+    /* --- preparation objects laid on the string (applied to the main string
+     * of the course). disturb sets how many prepared sources exist. --- */
     int nprep = (int)(disturb * PP_MAX_PREP + 0.5f);
     for (int i = 0; i < PP_MAX_PREP; i++) {
         pp_prep_t *pr = &v->prep[i];
-        /* probability a given object lands on this string scales with disturb */
         if (i < nprep && pp_frand(&v->rng) < (0.4f + 0.6f * disturb)) {
             pr->active   = 1;
             pr->thresh   = 0.02f + 0.25f * pp_frand(&v->rng);
@@ -397,118 +476,92 @@ static void voice_configure(pp_state_t *st, pp_voice_t *v, int note, int vel) {
             pr->active = 0;
         }
     }
-
-    /* --- excite the string: fill the whole loop with a coloured noise burst
-     * shaped like a hammer strike (a raised-cosine window on noise). --- */
-    int N = (int)(v->delay) + 1;
-    if (N > PP_DELAY_MAX) N = PP_DELAY_MAX;
-    /* Start the write pointer one delay-length ahead of the excitation so the
-     * read pointer (widx - delay) traverses the freshly-written burst before
-     * the feedback path overwrites it. Writing at widx==0 would clobber the
-     * excitation before it is ever read (silent plucks). */
-    v->widx = (int)v->delay;
-    if (v->widx >= PP_DELAY_MAX) v->widx = PP_DELAY_MAX - 1;
-    float hammer_lp = pp_lerp(0.85f, 0.05f, hammer); /* soft=darker burst */
-    float lp = 0.0f;
-    int burst = v->exc_len < N ? v->exc_len : N;
-    for (int i = 0; i < PP_DELAY_MAX; i++) v->buf[i] = 0.0f;
-    for (int i = 0; i < N; i++) {
-        float e = 0.0f;
-        if (i < burst) {
-            float w = 0.5f - 0.5f * cosf(2.0f * (float)M_PI * i / burst); /* window */
-            float nz = pp_frand_bi(&v->rng);
-            lp = pp_lerp(nz, lp, hammer_lp);
-            /* metal hammer adds a hard bright click at the very front */
-            float click = (i < 2) ? (hammer * (1.0f - hammer_lp)) : 0.0f;
-            e = (lp + click) * w;
-        }
-        v->buf[i] = e * v->exc_gain;
-    }
-    v->damp_z = 0.0f; v->ap_z = 0.0f; v->ap_x = 0.0f;
 }
 
-/* Render one sample from a voice, and add its sympathetic send. */
+/* Render one sample from a voice (a course of 1..3 strings), and add its
+ * sympathetic send. */
 static inline float voice_tick(pp_state_t *st, pp_voice_t *v, float *symp_in) {
-    (void)st;   /* reserved for future global-coupled processing */
-    /* fractional read from the delay line */
-    float rp = (float)v->widx - v->delay;
-    while (rp < 0) rp += PP_DELAY_MAX;
-    int i0 = (int)rp;
-    float fr = rp - i0;
-    int i1 = i0 + 1; if (i1 >= PP_DELAY_MAX) i1 -= PP_DELAY_MAX;
-    float s = pp_lerp(v->buf[i0], v->buf[i1], fr);
+    (void)st;
+    float sum = 0.0f;
 
-    /* string damping (one-pole lowpass): brighter when coef is low */
-    v->damp_z = pp_lerp(s, v->damp_z, v->damp_coef);
-    float d = v->damp_z;
+    for (int sidx = 0; sidx < v->nstr; sidx++) {
+        pp_string_t *s = &v->str[sidx];
 
-    /* dispersion: first-order allpass -> inharmonic, stiff-string partials */
-    float ap = v->disp_coef * d + v->ap_x - v->disp_coef * v->ap_z;
-    v->ap_x = d;
-    v->ap_z = ap;
+        /* fractional read from this string's delay line */
+        float rp = (float)s->widx - s->delay;
+        while (rp < 0) rp += PP_DELAY_MAX;
+        int i0 = (int)rp;
+        float fr = rp - i0;
+        int i1 = i0 + 1; if (i1 >= PP_DELAY_MAX) i1 -= PP_DELAY_MAX;
+        float rdv = pp_lerp(s->buf[i0], s->buf[i1], fr);
 
-    float loop = ap * v->loop_gain;
+        /* string damping (one-pole lowpass) */
+        s->damp_z = pp_lerp(rdv, s->damp_z, v->damp_coef);
+        float d = s->damp_z;
 
-    /* --- preparation: prepared objects buzzing against the string --- */
-    float buzz = 0.0f;
-    for (int i = 0; i < PP_MAX_PREP; i++) {
-        pp_prep_t *pr = &v->prep[i];
-        if (!pr->active) continue;
-        float a = loop >= 0 ? loop : -loop;
-        if (a > pr->thresh) {
-            /* the object chatters against the moving string: a fast rattle
-             * gated by the string amplitude, coloured metallic, plus it
-             * saps a little energy (dead weight) -> shortens/detunes tone */
-            pr->phase += pr->rate;
-            if (pr->phase > 6.2831853f) pr->phase -= 6.2831853f;
-            float r = sinf(pr->phase);
-            r = pp_tanhf(r * 3.0f);                 /* squared-off, buzzy */
-            pr->lp = pp_lerp(r * a, pr->lp, 0.3f);
-            buzz += pr->lp * pr->buzz_amt;
-            loop *= (1.0f - pr->mute);
+        /* dispersion allpass -> inharmonic, stiff-string partials */
+        float ap = v->disp_coef * d + s->ap_x - v->disp_coef * s->ap_z;
+        s->ap_x = d; s->ap_z = ap;
+
+        float loop = ap * s->gain;
+
+        /* preparation rattle -- applied to the main string of the course */
+        if (sidx == 0) {
+            float buzz = 0.0f;
+            for (int i = 0; i < PP_MAX_PREP; i++) {
+                pp_prep_t *pr = &v->prep[i];
+                if (!pr->active) continue;
+                float a = loop >= 0 ? loop : -loop;
+                if (a > pr->thresh) {
+                    pr->phase += pr->rate;
+                    if (pr->phase > 6.2831853f) pr->phase -= 6.2831853f;
+                    float r = pp_tanhf(sinf(pr->phase) * 3.0f);
+                    pr->lp = pp_lerp(r * a, pr->lp, 0.3f);
+                    buzz += pr->lp * pr->buzz_amt;
+                    loop *= (1.0f - pr->mute);
+                }
+            }
+            loop += buzz * 0.6f;
         }
+
+        /* bow / sustained excitation while held */
+        if (v->held && v->bow_amt > 0.001f) {
+            float nz = pp_frand_bi(&v->rng);
+            v->bow_lp = pp_lerp(nz, v->bow_lp, 0.6f);
+            float drive = v->bow_amt * (0.05f + 0.15f * v->vel);
+            float head = 1.0f - (loop >= 0 ? loop : -loop);
+            if (head < 0.0f) head = 0.0f;
+            loop += (v->bow_lp * 0.5f + 0.5f * pp_tanhf(loop * 2.0f)) * drive * 0.15f * head;
+        }
+
+        /* DC blocker in the feedback path */
+        float hp = loop - s->dc_x + 0.999f * s->dc_y;
+        s->dc_x = loop; s->dc_y = hp; loop = hp;
+
+        /* write back into this string's delay line */
+        s->buf[s->widx] = loop;
+        s->widx++; if (s->widx >= PP_DELAY_MAX) s->widx = 0;
+
+        sum += d;
     }
-    loop += buzz * 0.6f;
 
-    /* --- bow / sustained excitation while held (attack morph) --- */
-    if (v->held && v->bow_amt > 0.001f) {
-        float nz = pp_frand_bi(&v->rng);
-        v->bow_lp = pp_lerp(nz, v->bow_lp, 0.6f);
-        /* stick-slip-ish: bow drive interacts with current string velocity */
-        float drive = v->bow_amt * (0.05f + 0.15f * v->vel);
-        /* self-limiting: the bow feeds in less as the string gets loud, so a
-         * long loop_gain can't integrate the excitation up to a clip. */
-        float head = 1.0f - (loop >= 0 ? loop : -loop);
-        if (head < 0.0f) head = 0.0f;
-        loop += (v->bow_lp * 0.5f + 0.5f * pp_tanhf(loop * 2.0f)) * drive * 0.15f * head;
+    /* normalise for the string count, then apply the attack swell */
+    float out = sum * v->out_scale;
+    if (v->amp_env < 1.0f) {
+        v->amp_env += v->amp_inc;
+        if (v->amp_env > 1.0f) v->amp_env = 1.0f;
     }
-
-    /* one-shot hammer energy already sits in the buffer; nothing to add here */
-
-    /* DC blocker in the feedback path: the bow nonlinearity and asymmetric
-     * excitation can otherwise latch a DC bias into the waveguide. R=0.999
-     * -> ~7 Hz corner, well below the lowest note. */
-    float hp = loop - v->dc_x + 0.999f * v->dc_y;
-    v->dc_x = loop;
-    v->dc_y = hp;
-    loop = hp;
-
-    /* write back into the delay line */
-    v->buf[v->widx] = loop;
-    v->widx++; if (v->widx >= PP_DELAY_MAX) v->widx = 0;
-
-    float out = d;  /* tap the damped string as the voice output */
+    out *= v->amp_env;
 
     /* send to sympathetic bus (scaled outside by symp_send) */
     *symp_in += out;
 
-    /* voice death test: if it's quiet, un-held and not bowing, retire it */
-    if (!v->held && v->loop_gain < 0.999f) {
-        float a = out >= 0 ? out : -out;
-        static const float FLOOR = 2.0e-4f;
-        if (a < FLOOR && v->damp_z > -FLOOR && v->damp_z < FLOOR) {
-            v->age = -1; /* mark; culled in render loop after a short hold */
-        }
+    /* cull: released and quiet for a short while */
+    float a = out >= 0 ? out : -out;
+    if (!v->held && a < 2.0e-4f) {
+        if (++v->quiet > 2400) v->age = -1;   /* ~55 ms below floor */
+    } else {
+        v->quiet = 0;
     }
     return out;
 }
@@ -693,8 +746,8 @@ void pp_render_float(pp_state_t *st, float *out_l, float *out_r, int n) {
         float hl = l - st->dcx_l + 0.999f * st->dcy_l; st->dcx_l = l; st->dcy_l = hl;
         float hr = r - st->dcx_r + 0.999f * st->dcy_r; st->dcx_r = r; st->dcy_r = hr;
 
-        out_l[f] = hl * 1.7f;
-        out_r[f] = hr * 1.7f;
+        out_l[f] = hl * 1.10f;
+        out_r[f] = hr * 1.10f;
     }
 }
 

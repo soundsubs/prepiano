@@ -47,22 +47,24 @@ gain down so the note dies sooner. At the top of its range the string is nearly
 dead — a soft, muted thud. `damp_coef = 0.15 + 0.75·felt + …`, `T60 ·= lerp(1,
 0.12, felt)`.
 
-**Knob 2 — Attack (plucked → bowed).** At 0 the string is struck once and left
-to ring (impulsive pluck). As it turns up, a continuous stick-slip excitation is
-fed into the loop while the key is held, so the note is *sustained by bowing*
-rather than decaying. The bow term is self-limiting (`× (1 − |string|)`) so it
-drives a stable limit cycle instead of integrating up to a clip.
+**Knob 2 — Attack (plucked → gently bowed).** Two things move together. First, a
+continuous stick-slip excitation is fed into the loop while the key is held, so
+the note is *sustained by bowing* rather than decaying (self-limiting via
+`× (1 − |string|)`, so it settles into a stable limit cycle instead of clipping).
+Second, an **amplitude attack envelope** fades the note in over 0 → ~5 s, so at
+high Attack the sound swells up gently the way a slow bow speaks, instead of
+starting at full volume. At 0 the onset is instant (a pluck).
 
-**Knob 3 — Decay.** Ring time, from ~0.15 s to ~18 s, set through the loop gain
-`g = 10^(−3·Δt/T60)`. Barely-there staccato at the bottom, cathedral sustain at
-the top.
+**Knob 3 — Decay.** Ring time, from ~0.08 s up to ~10 s of audible tail
+(`g = 10^(−3·Δt/T60)`, with the raw T60 aimed a little high to offset the
+in-loop damping). Barely-there staccato at the bottom, long sustain at the top.
 
-**Knob 4 — Gauge.** String thickness/mass. Heavier gauge (a) adds *stiffness*,
+**Knob 4 — Gauge.** String thickness/mass — *not* the number of strings (that's
+automatic; see "Strings per note" below). Heavier gauge (a) adds *stiffness*,
 which increases the dispersion allpass coefficient → stretched, inharmonic,
 bell-like partials; (b) darkens the tone; (c) makes the string "harder to
-strike" — the same key velocity delivers less energy, so big strings need to be
-leaned on. Tuning is compensated for the extra allpass group delay so pitch
-stays put as you turn it.
+strike" — the same key velocity delivers less energy. Tuning is compensated for
+the extra allpass group delay so pitch stays put as you turn it.
 
 **Knob 5 — Hammer (felt → metal).** Shapes the excitation burst. A soft felt
 hammer is a longer, low-passed contact; a metal hammer is a short, bright click
@@ -87,6 +89,21 @@ up and the clean piano is progressively interrupted and detuned.
 As it goes from dry to 100% wet it also moves the source *away*: the dry signal
 drops out, pre-delay grows, and a distance lowpass darkens the tail, so full
 wet is a distant, diffuse room rather than just "more reverb".
+
+## Strings per note (automatic, by register)
+
+Real pianos don't put the same number of strings on every note: the lowest bass
+notes have a single thick copper-wound string, the upper bass has two, and the
+tenor and treble have three bare-steel strings per note (~230 strings over 88
+keys). PrePiano models this automatically by register — monochord for roughly
+the lowest octave (≤ E1), bichord through the upper bass (≤ D♯2), trichord from
+around the bass/tenor break (E2) up. Each unison string is a full waveguide,
+detuned from its neighbours by a couple of cents, so the course *beats* — that's
+the piano's shimmer. The companion strings are also given a slightly longer ring
+than the struck string, which reproduces the characteristic **double decay**: a
+loud, fast-decaying attack followed by a quieter, long-sustaining aftersound as
+the coupled strings trade energy. Output is level-normalised per string count,
+and preparation rattle is applied to the course's main string.
 
 ## The two dropdowns
 
