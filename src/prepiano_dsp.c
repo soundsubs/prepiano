@@ -285,6 +285,25 @@ static float mtof(int note) {   /* MIDI note -> Hz */
     return 440.0f * powf(2.0f, (note - 69) / 12.0f);
 }
 
+/* Recompute the amplitude/brightness coefficients that CAN change mid-note
+ * (felt damping, decay ring time, gauge brightness) from the current global
+ * knobs, without touching delay/dispersion (which would shift pitch). Called
+ * at note-on and again whenever Felt/Decay/Gauge move, so a held note responds
+ * live to those knobs. */
+static void voice_update_tone(pp_state_t *st, pp_voice_t *v) {
+    float felt  = st->p[PP_P_FELT];
+    float decay = st->p[PP_P_DECAY];
+    float gauge = st->p[PP_P_GAUGE];
+
+    v->damp_coef = pp_clampf(0.15f + 0.75f * felt + 0.15f * gauge, 0.0f, 0.93f);
+
+    float t60 = pp_lerp(0.15f, 18.0f, decay * decay);
+    t60 *= pp_lerp(1.0f, 0.12f, felt);
+    float delay_s = v->delay / st->sr;
+    float g = powf(10.0f, -3.0f * delay_s / t60);
+    v->loop_gain = pp_clampf(g, 0.0f, 0.99995f);
+}
+
 static void voice_silence(pp_voice_t *v) {
     v->active = 0; v->held = 0;
     v->damp_z = v->ap_z = v->ap_x = 0.0f;
@@ -306,7 +325,6 @@ static void voice_configure(pp_state_t *st, pp_voice_t *v, int note, int vel) {
 
     float felt   = st->p[PP_P_FELT];
     float attack = st->p[PP_P_ATTACK];
-    float decay  = st->p[PP_P_DECAY];
     float gauge  = st->p[PP_P_GAUGE];
     float hammer = st->p[PP_P_HAMMER];
     float disturb= st->p[PP_P_DISTURB];
@@ -331,14 +349,9 @@ static void voice_configure(pp_state_t *st, pp_voice_t *v, int note, int vel) {
     if (v->delay < 2.0f)  v->delay = 2.0f;
     if (v->delay > (float)(PP_DELAY_MAX - 2)) v->delay = (float)(PP_DELAY_MAX - 2);
 
-    /* --- decay (loop gain) ---
-     * Map decay knob to a target T60 from ~0.15 s to ~18 s. Felt shortens it.
-     * loop_gain = 10^(-3 * delaySeconds / T60). */
-    float t60 = pp_lerp(0.15f, 18.0f, decay * decay);
-    t60 *= pp_lerp(1.0f, 0.12f, felt);          /* felt = practice-strip mute */
-    float delay_s = v->delay / st->sr;
-    float g = powf(10.0f, -3.0f * delay_s / t60);
-    v->loop_gain = pp_clampf(g, 0.0f, 0.99995f);
+    /* --- decay / brightness (loop gain + damping) ---
+     * Derived from Felt/Decay/Gauge; recomputed live when those knobs move. */
+    voice_update_tone(st, v);
 
     /* --- hammer excitation ---
      * Contact time: soft felt hammer = longer, rounder; metal = short click.
@@ -585,6 +598,12 @@ void pp_set_param(pp_state_t *st, pp_param_t id, float value) {
             break;
         default:
             st->p[id] = pp_clampf(value, 0.0f, 1.0f);
+            /* Felt/Decay/Gauge change damping and ring time, which a currently
+             * held note can respond to without a pitch jump -> live tweak. */
+            if (id == PP_P_FELT || id == PP_P_DECAY || id == PP_P_GAUGE) {
+                for (int i = 0; i < PP_MAX_VOICES; i++)
+                    if (st->voices[i].active) voice_update_tone(st, &st->voices[i]);
+            }
             break;
     }
 }

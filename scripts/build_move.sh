@@ -53,7 +53,8 @@ $CC -O3 -shared -fPIC $INCS \
 
 echo "==> staging module package"
 cp src/modules/${MOD}/module.json "${OUT}/module.json"
-cp src/modules/${MOD}/ui.js       "${OUT}/ui.js"
+# optional custom UI (PrePiano uses the stock Shadow UI, so this is usually absent)
+[ -f src/modules/${MOD}/ui.js ] && cp src/modules/${MOD}/ui.js "${OUT}/ui.js" || true
 
 TARBALL="build/${MOD}-module.tar.gz"
 tar -C build/modules -czf "$TARBALL" "${MOD}"

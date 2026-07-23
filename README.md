@@ -32,8 +32,8 @@ prepiano/
 │   ├── plugin/prepiano_plugin.c   # Schwung DSP Plugin API v2 wrapper
 │   ├── host/plugin_api_v1.h       # reference stub of the Schwung ABI (see note)
 │   └── modules/prepiano/
-│       ├── module.json            # manifest: 8 chain-param knobs + dropdowns
-│       └── ui.js                  # minimal Shadow UI screen
+│       └── module.json            # manifest: 8 chain-param knobs + dropdowns
+│                                  #   (uses the stock Shadow UI — no custom ui.js)
 ├── test/render_demo.c            # renders build/prepiano_demo.wav
 ├── scripts/
 │   ├── build_desktop.sh          # compile + render the demo WAV
