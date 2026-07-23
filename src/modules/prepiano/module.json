@@ -1,0 +1,57 @@
+{
+  "id": "prepiano",
+  "name": "PrePiano",
+  "version": "0.1.0",
+  "api_version": 2,
+  "abbrev": "PPNO",
+  "description": "Physically-modelled, preparable piano. Felt, bowing, gauge, hammer, sympathetic resonance, and prepared-piano disturbance.",
+  "author": "soundsubs",
+  "capabilities": {
+    "audio_out": true,
+    "midi_in": true,
+    "chainable": true,
+    "component_type": "sound_generator",
+    "chain_params": [
+      { "key": "felt",    "name": "Felt",    "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.25 },
+      { "key": "attack",  "name": "Attack",  "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.00 },
+      { "key": "decay",   "name": "Decay",   "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.55 },
+      { "key": "gauge",   "name": "Gauge",   "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.20 },
+      { "key": "hammer",  "name": "Hammer",  "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.40 },
+      { "key": "symp",    "name": "Symp",    "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.25 },
+      { "key": "disturb", "name": "Disturb", "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.00 },
+      { "key": "reverb",  "name": "Reverb",  "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.25 }
+    ]
+  },
+  "ui": "ui.js",
+  "ui_hierarchy": {
+    "levels": {
+      "root": {
+        "name": "PrePiano",
+        "params": [
+          { "key": "felt",    "name": "Felt",    "type": "float", "min": 0, "max": 1, "step": 0.01 },
+          { "key": "attack",  "name": "Attack",  "type": "float", "min": 0, "max": 1, "step": 0.01 },
+          { "key": "decay",   "name": "Decay",   "type": "float", "min": 0, "max": 1, "step": 0.01 },
+          { "key": "gauge",   "name": "Gauge",   "type": "float", "min": 0, "max": 1, "step": 0.01 },
+          { "key": "hammer",  "name": "Hammer",  "type": "float", "min": 0, "max": 1, "step": 0.01 },
+          { "key": "symp",    "name": "Symp",    "type": "float", "min": 0, "max": 1, "step": 0.01 },
+          { "key": "disturb", "name": "Disturb", "type": "float", "min": 0, "max": 1, "step": 0.01 },
+          { "key": "reverb",  "name": "Reverb",  "type": "float", "min": 0, "max": 1, "step": 0.01 },
+          { "level": "menu", "label": "Voicing" }
+        ],
+        "knobs": ["felt", "attack", "decay", "gauge", "hammer", "symp", "disturb", "reverb"]
+      },
+      "menu": {
+        "name": "Voicing",
+        "params": [
+          { "key": "poly", "name": "Polyphony", "type": "enum",
+            "options": ["16", "12", "8", "6", "4", "3", "2", "1 (mono)"],
+            "values":  ["16", "12", "8", "6", "4", "3", "2", "1"] },
+          { "key": "rndmz", "name": "RNDMZ", "type": "enum",
+            "options": ["—", "Randomize!"],
+            "values":  ["0", "1"] }
+        ],
+        "knobs": ["poly"]
+      }
+    }
+  }
+}
