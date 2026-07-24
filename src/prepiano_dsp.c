@@ -32,6 +32,9 @@
  * 44100 / 27.5 ~= 1604 samples; round up with headroom. */
 #define PP_DELAY_MAX 2400
 
+/* soundboard body resonator count */
+#define PP_BODY_MODES 3
+
 /* ----------------------------------------------------------------------- *
  *  Small helpers
  * ----------------------------------------------------------------------- */
@@ -191,11 +194,51 @@ struct pp_state {
 
     pp_reverb_t rvb;
 
+    /* soundboard body resonance: a few broad low/mid resonators that colour
+     * the bus, adding the wood/air that separates a piano from a bare string */
+    float body_y1[PP_BODY_MODES], body_y2[PP_BODY_MODES];
+    float body_b1[PP_BODY_MODES], body_b2[PP_BODY_MODES], body_a[PP_BODY_MODES];
+
     /* master DC blocker (belt-and-suspenders after the reverb) */
     float dcx_l, dcy_l, dcx_r, dcy_r;
 
+    /* scratch buffer for building note excitations (avoids stack pressure) */
+    float scratch[PP_DELAY_MAX];
+
     uint32_t rng;          /* master RNG (note-on randomisation, RNDMZ)    */
 };
+
+/* ----------------------------------------------------------------------- *
+ *  Soundboard body resonance (a few broad 2-pole resonators)
+ * ----------------------------------------------------------------------- */
+static void body_init(pp_state_t *st) {
+    /* Broad (low-Q) resonances in the low-mid, like a piano's body/soundboard.
+     * r near 0.9 keeps them broad so they colour rather than ring. */
+    static const float freqs[PP_BODY_MODES] = { 130.0f, 260.0f, 520.0f };
+    static const float rs[PP_BODY_MODES]    = { 0.90f,  0.91f,  0.90f  };
+    for (int i = 0; i < PP_BODY_MODES; i++) {
+        float w = 2.0f * (float)M_PI * freqs[i] / st->sr;
+        float r = rs[i];
+        st->body_b1[i] = 2.0f * r * cosf(w);
+        st->body_b2[i] = -r * r;
+        st->body_a[i]  = (1.0f - r);        /* rough bandpass normalisation   */
+        st->body_y1[i] = st->body_y2[i] = 0.0f;
+    }
+}
+
+/* Run the mono bus through the body resonators; returns the added colour. */
+static inline float body_process(pp_state_t *st, float x) {
+    float out = 0.0f;
+    for (int i = 0; i < PP_BODY_MODES; i++) {
+        float y = st->body_a[i] * x
+                + st->body_b1[i] * st->body_y1[i]
+                + st->body_b2[i] * st->body_y2[i];
+        st->body_y2[i] = st->body_y1[i];
+        st->body_y1[i] = y;
+        out += y;
+    }
+    return out;
+}
 
 /* ----------------------------------------------------------------------- *
  *  Reverb construction / processing
@@ -404,7 +447,7 @@ static void voice_configure(pp_state_t *st, pp_voice_t *v, int note, int vel) {
 
     static const float cents3[3] = { 0.0f, 2.5f, -2.5f };
     static const float cents2[2] = { 0.0f, 2.8f };
-    float hammer_lp = pp_lerp(0.85f, 0.05f, hammer); /* soft=darker burst */
+    float softness = 1.0f - hammer;   /* 1 = soft felt, 0 = metal */
 
     for (int sidx = 0; sidx < v->nstr; sidx++) {
         pp_string_t *s = &v->str[sidx];
@@ -415,21 +458,41 @@ static void voice_configure(pp_state_t *st, pp_voice_t *v, int note, int vel) {
         if (sd > (float)(PP_DELAY_MAX - 2)) sd = (float)(PP_DELAY_MAX - 2);
         s->delay = sd;
         int N = (int)sd + 1; if (N > PP_DELAY_MAX) N = PP_DELAY_MAX;
-        /* write pointer one delay ahead so the read traverses the burst first */
         s->widx = (int)sd; if (s->widx >= PP_DELAY_MAX) s->widx = PP_DELAY_MAX - 1;
-        int burst = v->exc_len < N ? v->exc_len : N;
-        float lp = 0.0f;
+
+        /* --- hammer strike excitation ---
+         * Build a smooth raised-cosine hammer force pulse (its width sets the
+         * spectral rolloff: wide/soft -> fundamental-heavy and mellow,
+         * narrow/metal -> bright), add a little coloured noise for life, then
+         * apply the strike-position comb (1 - z^-d), d ~ N/8. That comb imposes
+         * the piano's sin(k*pi*beta) mode weighting and the signature
+         * missing-7th notch -- the difference between a struck piano and the
+         * plucked, hollow clav tone the old white-noise burst produced. */
+        float *tmp = st->scratch;
+        int hw = (int)((0.05f + 0.22f * softness) * N) + 2;   /* pulse half-width */
+        if (hw > N / 2) hw = N / 2;
+        if (hw < 2) hw = 2;
+        for (int i = 0; i < N; i++) tmp[i] = 0.0f;
+        for (int j = -hw; j <= hw; j++) {
+            int idx = ((j % N) + N) % N;
+            tmp[idx] += 0.5f * (1.0f + cosf((float)M_PI * j / hw));
+        }
+        float nz_amt = 0.05f + 0.22f * hammer;                /* metal = livelier */
+        float ncoef  = pp_lerp(0.65f, 0.10f, hammer);
+        float nlp = 0.0f;
+        for (int i = 0; i < N; i++) {
+            float nz = pp_frand_bi(&v->rng);
+            nlp = pp_lerp(nz, nlp, ncoef);
+            tmp[i] += nlp * nz_amt;
+        }
+        int d = (int)(0.125f * N + 0.5f);                     /* strike ~ 1/8    */
+        if (d < 1) d = 1;
+        if (d >= N) d = N - 1;
+        float norm = v->exc_gain * (5.5f / (float)hw);        /* level normalise */
         for (int i = 0; i < PP_DELAY_MAX; i++) s->buf[i] = 0.0f;
         for (int i = 0; i < N; i++) {
-            float e = 0.0f;
-            if (i < burst) {
-                float w = 0.5f - 0.5f * cosf(2.0f * (float)M_PI * i / burst);
-                float nz = pp_frand_bi(&v->rng);       /* per-string -> decorrelated */
-                lp = pp_lerp(nz, lp, hammer_lp);
-                float click = (i < 2) ? (hammer * (1.0f - hammer_lp)) : 0.0f;
-                e = (lp + click) * w;
-            }
-            s->buf[i] = e * v->exc_gain;
+            int pidx = i - d; if (pidx < 0) pidx += N;
+            s->buf[i] = (tmp[i] - tmp[pidx]) * norm;
         }
         s->damp_z = s->ap_z = s->ap_x = s->dc_x = s->dc_y = 0.0f;
     }
@@ -529,9 +592,9 @@ static inline float voice_tick(pp_state_t *st, pp_voice_t *v, float *symp_in) {
             float nz = pp_frand_bi(&v->rng);
             v->bow_lp = pp_lerp(nz, v->bow_lp, 0.6f);
             float drive = v->bow_amt * (0.05f + 0.15f * v->vel);
-            float head = 1.0f - (loop >= 0 ? loop : -loop);
+            float head = 0.30f - (loop >= 0 ? loop : -loop);   /* cap bowed level */
             if (head < 0.0f) head = 0.0f;
-            loop += (v->bow_lp * 0.5f + 0.5f * pp_tanhf(loop * 2.0f)) * drive * 0.15f * head;
+            loop += (v->bow_lp * 0.5f + 0.5f * pp_tanhf(loop * 2.0f)) * drive * 0.08f * head;
         }
 
         /* DC blocker in the feedback path */
@@ -558,7 +621,7 @@ static inline float voice_tick(pp_state_t *st, pp_voice_t *v, float *symp_in) {
 
     /* cull: released and quiet for a short while */
     float a = out >= 0 ? out : -out;
-    if (!v->held && a < 2.0e-4f) {
+    if (!v->held && a < 5.0e-5f) {
         if (++v->quiet > 2400) v->age = -1;   /* ~55 ms below floor */
     } else {
         v->quiet = 0;
@@ -608,7 +671,7 @@ pp_state_t *pp_create(float sample_rate) {
     st->p[PP_P_ATTACK]      = 0.0f;
     st->p[PP_P_DECAY]       = 0.55f;
     st->p[PP_P_GAUGE]       = 0.2f;
-    st->p[PP_P_HAMMER]      = 0.4f;
+    st->p[PP_P_HAMMER]      = 0.28f;
     st->p[PP_P_SYMPATHETIC] = 0.25f;
     st->p[PP_P_DISTURB]     = 0.0f;
     st->p[PP_P_REVERB]      = 0.25f;
@@ -618,6 +681,7 @@ pp_state_t *pp_create(float sample_rate) {
     for (int i = 0; i < PP_MAX_VOICES; i++) voice_silence(&st->voices[i]);
     symp_init(st);
     reverb_init(&st->rvb, st->sr);
+    body_init(st);
     return st;
 }
 
@@ -628,6 +692,7 @@ void pp_reset(pp_state_t *st) {
     for (int i = 0; i < PP_MAX_VOICES; i++) voice_silence(&st->voices[i]);
     symp_init(st);
     reverb_init(&st->rvb, st->sr);
+    body_init(st);
 }
 
 void pp_seed(pp_state_t *st, uint32_t seed) { if (st) st->rng = seed ? seed : 1u; }
@@ -735,6 +800,12 @@ void pp_render_float(pp_state_t *st, float *out_l, float *out_r, int n) {
         mix_l += symp_out;
         mix_r += symp_out;
 
+        /* soundboard body resonance: colour the mono sum and fold it back in,
+         * adding the wood/air a bare string lacks */
+        float body = body_process(st, (mix_l + mix_r) * 0.5f) * 0.12f;
+        mix_l += body;
+        mix_r += body;
+
         /* headroom / gentle bus saturation before reverb, then master trim */
         mix_l = pp_tanhf(mix_l * 0.5f) * 0.85f;
         mix_r = pp_tanhf(mix_r * 0.5f) * 0.85f;
@@ -746,8 +817,8 @@ void pp_render_float(pp_state_t *st, float *out_l, float *out_r, int n) {
         float hl = l - st->dcx_l + 0.999f * st->dcy_l; st->dcx_l = l; st->dcy_l = hl;
         float hr = r - st->dcx_r + 0.999f * st->dcy_r; st->dcx_r = r; st->dcy_r = hr;
 
-        out_l[f] = hl * 1.10f;
-        out_r[f] = hr * 1.10f;
+        out_l[f] = hl * 1.3f;
+        out_r[f] = hr * 1.3f;
     }
 }
 

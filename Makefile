@@ -20,7 +20,7 @@ build/modules/prepiano/dsp.so: src/plugin/prepiano_plugin.c src/prepiano_dsp.c
 	@mkdir -p build/modules/prepiano
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ \
 		src/plugin/prepiano_plugin.c src/prepiano_dsp.c $(LDLIBS)
-	@cp src/modules/prepiano/module.json build/modules/prepiano/
+	@cp src/modules/prepiano/module.json src/modules/prepiano/ui.js build/modules/prepiano/
 
 clean:
 	rm -rf build
