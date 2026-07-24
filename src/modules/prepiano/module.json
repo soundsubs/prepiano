@@ -2,7 +2,7 @@
   "id": "prepiano",
   "name": "PrePiano",
   "abbrev": "PPNO",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Physically-modelled, preparable piano. Felt, bowing, gauge, hammer, sympathetic resonance, and prepared-piano disturbance.",
   "author": "soundsubs",
   "ui": "ui.js",
@@ -15,6 +15,16 @@
     "midi_out": false,
     "chainable": true,
     "component_type": "sound_generator",
+    "chain_params": [
+      { "key": "felt",    "name": "Felt",    "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.25 },
+      { "key": "attack",  "name": "Attack",  "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.00 },
+      { "key": "decay",   "name": "Decay",   "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.55 },
+      { "key": "gauge",   "name": "Gauge",   "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.20 },
+      { "key": "hammer",  "name": "Hammer",  "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.28 },
+      { "key": "symp",    "name": "Symp",    "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.25 },
+      { "key": "disturb", "name": "Disturb", "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.00 },
+      { "key": "reverb",  "name": "Reverb",  "type": "float", "min": 0, "max": 1, "step": 0.01, "default": 0.25 }
+    ],
     "ui_hierarchy": {
       "levels": {
         "root": {
