@@ -30,10 +30,10 @@
 
 /* Longest delay line: lowest usable note ~ MIDI 21 (A0, 27.5 Hz).
  * 44100 / 27.5 ~= 1604 samples; round up with headroom. */
-#define PP_DELAY_MAX 2400
+#define PP_DELAY_MAX 1700   /* covers A0 (27.5 Hz); smaller = better cache */
 
 /* soundboard body resonator count */
-#define PP_BODY_MODES 10
+#define PP_BODY_MODES 5
 
 /* ----------------------------------------------------------------------- *
  *  Small helpers
@@ -150,9 +150,12 @@ typedef struct {
  *   trichord  (3)  : tenor+treble, ~E2 and up
  * Exact break notes vary by instrument; these are typical. */
 static int strings_for_note(int note) {
-    if (note <= 28) return 1;   /* .. E1  */
-    if (note <= 39) return 2;   /* .. D#2 */
-    return 3;                   /* E2 ..  */
+    /* One string per note. The Move's CPU can't afford 2-3 waveguides per key
+     * at useful polyphony (its voice ceiling is tiny), and the piano tone comes
+     * from the strike model, not the unison count. Multi-string coupling can
+     * return as a low-polyphony option once it fits the budget. */
+    (void)note;
+    return 1;
 }
 
 /* ----------------------------------------------------------------------- *
@@ -227,11 +230,11 @@ static void body_init(pp_state_t *st) {
      * modes broad and strong, upper modes tighter and quieter, so the body
      * colours the low-mid (wood/air) without a metallic ring. */
     static const float freqs[PP_BODY_MODES] =
-        {  75.0f, 110.0f, 160.0f, 220.0f, 300.0f, 420.0f, 580.0f, 800.0f, 1150.0f, 1900.0f };
+        { 110.0f, 200.0f, 380.0f, 700.0f, 1300.0f };
     static const float rs[PP_BODY_MODES] =
-        { 0.86f, 0.87f, 0.88f, 0.89f, 0.90f, 0.91f, 0.90f, 0.88f, 0.85f, 0.80f };
+        { 0.86f, 0.89f, 0.90f, 0.87f, 0.82f };
     static const float gs[PP_BODY_MODES] =
-        { 1.00f, 1.00f, 0.92f, 0.85f, 0.78f, 0.68f, 0.58f, 0.44f, 0.30f, 0.18f };
+        { 1.00f, 0.85f, 0.65f, 0.45f, 0.25f };
     for (int i = 0; i < PP_BODY_MODES; i++) {
         float w = 2.0f * (float)M_PI * freqs[i] / st->sr;
         float r = rs[i];
@@ -350,7 +353,7 @@ static void symp_init(pp_state_t *st) {
     /* Tune the open-string bank across a musical spread (roughly a stack of
      * fifths/octaves) so struck notes excite plausible neighbours. */
     static const float semis[PP_SYMPATHETIC_TAPS] =
-        { -24, -17, -12, -5, 0, 7, 12, 19, 24 };
+        { -12, -5, 0, 7, 12 };
     for (int i = 0; i < PP_SYMPATHETIC_TAPS; i++) {
         float f = 220.0f * powf(2.0f, semis[i] / 12.0f);
         int L = (int)(st->sr / f + 0.5f);
@@ -752,7 +755,7 @@ pp_state_t *pp_create(float sample_rate) {
     st->p[PP_P_SYMPATHETIC] = 0.25f;
     st->p[PP_P_DISTURB]     = 0.0f;
     st->p[PP_P_REVERB]      = 0.25f;
-    st->polyphony           = PP_MAX_VOICES;
+    st->polyphony           = 6;   /* leave CPU headroom by default          */
     st->symp_send           = st->p[PP_P_SYMPATHETIC];
 
     for (int i = 0; i < PP_MAX_VOICES; i++) voice_silence(&st->voices[i]);

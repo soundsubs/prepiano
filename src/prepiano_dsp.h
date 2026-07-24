@@ -22,9 +22,9 @@
 extern "C" {
 #endif
 
-#define PP_MAX_VOICES        16
-#define PP_MAX_PREP          8      /* max simultaneous "prepared" objects */
-#define PP_SYMPATHETIC_TAPS  9      /* open-string resonator bank size     */
+#define PP_MAX_VOICES        8      /* Move CPU ceiling is low; keep this lean */
+#define PP_MAX_PREP          6      /* max simultaneous "prepared" objects */
+#define PP_SYMPATHETIC_TAPS  5      /* open-string resonator bank size     */
 
 /* Parameter identifiers. These line up 1:1 with the eight physical knobs
  * on Move plus the two menu/dropdown parameters. All continuous params take

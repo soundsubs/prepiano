@@ -98,10 +98,10 @@ static void plug_set_param(void *instance, const char *key, const char *val) {
     /* The Voicing menu entries are enums, which the host delivers as the
      * selected option's INDEX (matching Schwung's index-based enum default). */
     if (id == PP_P_POLYPHONY) {
-        static const int counts[8] = { 16, 12, 8, 6, 4, 3, 2, 1 };
+        static const int counts[6] = { 8, 6, 4, 3, 2, 1 };
         int idx = val ? atoi(val) : 0;
         if (idx < 0) idx = 0;
-        if (idx > 7) idx = 7;
+        if (idx > 5) idx = 5;
         pp_set_param(in->dsp, PP_P_POLYPHONY, (float)counts[idx]);
         return;
     }
