@@ -88,6 +88,7 @@ typedef struct {
 #define PP_MAX_STRINGS 3
 #define PP_DISP_STAGES 1   /* allpass -> subtle stiff-string colour (see DESIGN) */
 #define PP_COUPLING    0.005f /* unison-string bridge coupling (double decay)   */
+#define PP_DAMPER_TOP  76      /* notes >= this have no damper (ring on release)*/
 typedef struct {
     float buf[PP_DELAY_MAX];
     int   widx;
@@ -129,6 +130,13 @@ typedef struct {
     float bow_amt;         /* 0 = pluck, 1 = sustained bow                 */
     float bow_lp;          /* bow noise colouring                          */
     int   held;            /* note is still down (bow keeps exciting)      */
+
+    /* release damper: on note-off, a felt damper falls and mutes the string
+     * over ~0.25 s -- unless the top notes (no dampers), which ring on. */
+    int   has_damper;      /* 1 if the key has a damper (note < PP_DAMPER_TOP) */
+    int   releasing;       /* damper is currently falling                   */
+    float rel;             /* release gain, 1 -> 0                          */
+    float rel_coef;        /* per-sample release decay (0.25 s)             */
 
     /* preparation objects (applied to the main string of the course) */
     pp_prep_t prep[PP_MAX_PREP];
@@ -280,7 +288,10 @@ static void reverb_init(pp_reverb_t *r, float sr) {
 /* wet in [0,1]; also drives "distance": more wet -> darker + pre-delayed */
 static void reverb_process(pp_reverb_t *r, float in_l, float in_r,
                            float wet, float *out_l, float *out_r) {
-    const float fb   = 0.80f + 0.03f * wet;       /* longer tail when wet   */
+    /* Knob 8 grows the room's decay along with wetness/distance: feedback
+     * climbs to ~0.965 at full wet for roughly a 5 s tail, so turning it up
+     * feels like the piano receding into a big, long room. */
+    const float fb   = 0.80f + 0.165f * wet;      /* RT60 up to ~5 s        */
     const float damp = 0.20f + 0.25f * wet;       /* darker when far        */
     const float in[2] = { in_l, in_r };
     float out[2];
@@ -372,11 +383,13 @@ static void voice_update_tone(pp_state_t *st, pp_voice_t *v) {
 
     v->damp_coef = pp_clampf(0.15f + 0.75f * felt + 0.15f * gauge, 0.0f, 0.93f);
 
-    /* Decay knob -> ring time. The in-loop damping filter removes energy on
-     * top of the loop gain, so we aim the raw T60 a bit high (~14 s) to land a
-     * ~10 s audible tail at full Decay. Felt shortens it. */
-    float t60 = pp_lerp(0.08f, 14.0f, decay * decay);
+    /* Decay knob -> base ring time (aimed a bit high to offset in-loop damping).
+     * Felt shortens it. Then scale STRONGLY by register: bass strings ring for
+     * tens of seconds, treble strings barely ring at all (higher key = faster
+     * decay), like a real piano's scaling. */
+    float t60 = pp_lerp(0.10f, 12.0f, decay * decay);
     t60 *= pp_lerp(1.0f, 0.12f, felt);
+    t60 *= powf(2.0f, (57.0f - (float)v->note) / 15.0f);
     float delay_s = v->str[0].delay / st->sr;
     float g = powf(10.0f, -3.0f * delay_s / t60);
     g = pp_clampf(g, 0.0f, 0.99995f);
@@ -394,6 +407,7 @@ static void voice_silence(pp_voice_t *v) {
     v->active = 0; v->held = 0; v->quiet = 0;
     v->bow_lp = 0.0f; v->exc_len = 0;
     v->amp_env = 1.0f; v->amp_inc = 1.0f;
+    v->releasing = 0; v->rel = 1.0f; v->has_damper = 1;
     v->nstr = 1; v->out_scale = 1.0f;
     for (int sidx = 0; sidx < PP_MAX_STRINGS; sidx++) {
         pp_string_t *s = &v->str[sidx];
@@ -459,8 +473,10 @@ static void voice_configure(pp_state_t *st, pp_voice_t *v, int note, int vel) {
      * Brightness of the burst rises with the hammer knob and with velocity. */
     float contact_ms = pp_lerp(6.0f, 0.8f, hammer);     /* felt->metal */
     v->exc_len = (int)(contact_ms * 0.001f * st->sr) + 1;
-    /* heavier gauge is "harder to strike": same key effort -> less energy in */
-    v->exc_gain = (0.35f + 0.65f * v->vel) * pp_lerp(1.0f, 0.6f, gauge);
+    /* Velocity drives amplitude HARD (wide dynamic range): near-silent at the
+     * lightest touch, full at 127. vel^1.5 gives ~a 60 dB span. Heavier gauge is
+     * "harder to strike": same key effort -> less energy in. */
+    v->exc_gain = powf(v->vel, 1.5f) * 1.35f * pp_lerp(1.0f, 0.6f, gauge);
 
     /* --- unison strings for this note (1 bass .. 3 treble), each detuned a
      * couple of cents so the course beats -> shimmer + double-decay. --- */
@@ -497,7 +513,7 @@ static void voice_configure(pp_state_t *st, pp_voice_t *v, int note, int vel) {
          * shortening the contact -> a narrower pulse -> a brighter tone. So the
          * effective softness shrinks with velocity, and playing harder gets
          * brighter, not just louder (the key piano expressiveness). */
-        float eff_soft = softness * pp_lerp(1.25f, 0.45f, v->vel);
+        float eff_soft = softness * pp_lerp(1.30f, 0.30f, v->vel);
         int hw = (int)((0.04f + 0.22f * eff_soft) * N) + 2;   /* pulse half-width */
         if (hw > N / 2) hw = N / 2;
         if (hw < 2) hw = 2;
@@ -541,6 +557,12 @@ static void voice_configure(pp_state_t *st, pp_voice_t *v, int note, int vel) {
     }
     v->bow_amt = attack;   /* higher attack also drives the sustained bow */
     v->bow_lp  = 0.0f;
+
+    /* release damper setup (0.25 s felt mute; top notes have no damper) */
+    v->has_damper = (note < PP_DAMPER_TOP);
+    v->releasing  = 0;
+    v->rel        = 1.0f;
+    v->rel_coef   = powf(10.0f, -3.0f / (0.25f * st->sr));  /* T60 = 0.25 s */
 
     /* --- keyboard panning: low strings sit left, high strings right. --- */
     {
@@ -665,6 +687,11 @@ static inline float voice_tick(pp_state_t *st, pp_voice_t *v, float *symp_in) {
         if (v->amp_env > 1.0f) v->amp_env = 1.0f;
     }
     out *= v->amp_env;
+
+    /* release damper: once the key is up (damped notes) the felt mutes the
+     * string over ~0.25 s. A naturally-faster decay just reaches silence first. */
+    if (v->releasing) v->rel *= v->rel_coef;
+    out *= v->rel;
 
     /* send to sympathetic bus (scaled outside by symp_send) */
     *symp_in += out;
@@ -791,9 +818,14 @@ void pp_note_on(pp_state_t *st, int note, int vel) {
 
 void pp_note_off(pp_state_t *st, int note) {
     if (!st) return;
-    for (int i = 0; i < PP_MAX_VOICES; i++)
-        if (st->voices[i].active && st->voices[i].note == note)
-            st->voices[i].held = 0;   /* let it ring / stop bowing */
+    for (int i = 0; i < PP_MAX_VOICES; i++) {
+        pp_voice_t *v = &st->voices[i];
+        if (v->active && v->note == note) {
+            v->held = 0;                    /* stop bowing                   */
+            if (v->has_damper) v->releasing = 1;  /* felt damper falls (0.25s)*/
+            /* top notes (no damper) just ring out naturally */
+        }
+    }
 }
 
 void pp_all_notes_off(pp_state_t *st) {
