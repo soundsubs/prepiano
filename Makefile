@@ -7,13 +7,16 @@ LDLIBS  ?= -lm
 all: demo plugin
 
 # Analysis / verification harnesses
-tools: build/measure build/bench
+tools: build/measure build/bench build/decay
 build/measure: test/measure_partials.c src/prepiano_dsp.c
 	@mkdir -p build
 	$(CC) $(CFLAGS) -o $@ test/measure_partials.c src/prepiano_dsp.c $(LDLIBS)
 build/bench: test/bench.c src/prepiano_dsp.c
 	@mkdir -p build
 	$(CC) $(CFLAGS) -o $@ test/bench.c src/prepiano_dsp.c $(LDLIBS)
+build/decay: test/measure_decay.c src/prepiano_dsp.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) -o $@ test/measure_decay.c src/prepiano_dsp.c $(LDLIBS)
 
 # Focused showcase of inharmonicity + detuned unisons
 showcase: build/showcase

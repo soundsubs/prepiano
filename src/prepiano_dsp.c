@@ -397,6 +397,28 @@ static double pp_dc_phasedelay(double R, double w) {   /* (1-z^-1)/(1-R z^-1) */
     return -(an - ad) / w;              /* DC blocker leads -> negative delay */
 }
 
+/* Magnitude of the one-pole loop lowpass  y=(1-a)x+a*y[-1]  at angular freq w. */
+static float pp_lp_mag(float a, float w) {
+    return (1.0f - a) / sqrtf(1.0f - 2.0f*a*cosf(w) + a*a);
+}
+
+/* Loop damping coefficient. The one-pole lowpass runs once per string period,
+ * so a FIXED coefficient damps high notes f0 times/second -> they go dark and
+ * plucky almost instantly (the classic Karplus-Strong problem). We scale the
+ * coefficient DOWN with pitch (roughly ~1/f0 above ~200 Hz) so the *per-second*
+ * brightness loss stays comparable across the keyboard instead of exploding in
+ * the treble. Felt and gauge still darken the tone on top of this. */
+static float pp_damp_coef(float felt, float gauge, float f0) {
+    /* Base damping is LOW so a bright patch (felt 0) keeps its upper partials
+     * singing for seconds instead of collapsing to a dull tone in ~0.3 s (the
+     * "too plucky" complaint). Felt is the darkening control (up to a muted
+     * ~0.85); gauge adds only a little warmth. Then scale DOWN with pitch so the
+     * treble stays bright too (per-second, not per-period, HF loss). */
+    float base  = pp_clampf(0.02f + 0.78f*felt + 0.05f*gauge, 0.0f, 0.90f);
+    float scale = pp_clampf(200.0f / f0, 0.12f, 1.0f);   /* high notes: gentler */
+    return pp_clampf(base * scale, 0.010f, 0.90f);
+}
+
 /* Recompute the amplitude/brightness coefficients that CAN change mid-note
  * (felt damping, decay ring time, gauge brightness) from the current global
  * knobs, without touching delay/dispersion (which would shift pitch). Called
@@ -407,17 +429,24 @@ static void voice_update_tone(pp_state_t *st, pp_voice_t *v) {
     float decay = st->p[PP_P_DECAY];
     float gauge = st->p[PP_P_GAUGE];
 
-    v->damp_coef = pp_clampf(0.15f + 0.75f * felt + 0.15f * gauge, 0.0f, 0.93f);
+    v->damp_coef = pp_damp_coef(felt, gauge, v->freq);
 
-    /* Decay knob -> base ring time (aimed a bit high to offset in-loop damping).
-     * Felt shortens it. Then scale STRONGLY by register: bass strings ring for
-     * tens of seconds, treble strings barely ring at all (higher key = faster
-     * decay), like a real piano's scaling. */
+    /* Decay knob -> base ring time. Felt shortens it. Scale by register so bass
+     * strings ring for tens of seconds and the treble decays faster -- but only
+     * GENTLY (~1.6:1 per octave, matching real pianos), not the steep 2-3:1 the
+     * old /15 gave. */
     float t60 = pp_lerp(0.10f, 12.0f, decay * decay);
     t60 *= pp_lerp(1.0f, 0.12f, felt);
-    t60 *= powf(2.0f, (57.0f - (float)v->note) / 15.0f);
+    t60 *= powf(2.0f, (57.0f - (float)v->note) / 24.0f);
+
+    /* Loop gain sets the FUNDAMENTAL's decay to t60. The one-pole lowpass also
+     * loses a little at the fundamental; divide it back out so g -- not the
+     * lowpass -- actually controls the ring time (this is what stops high notes
+     * dying ~10x too fast). The pitch-scaled damp_coef keeps this < 1 / stable. */
     float delay_s = v->str[0].delay / st->sr;
-    float g = powf(10.0f, -3.0f * delay_s / t60);
+    float w0   = 2.0f * (float)M_PI * v->freq / st->sr;
+    float hlp  = pp_lp_mag(v->damp_coef, w0);
+    float g = powf(10.0f, -3.0f * delay_s / t60) / (hlp > 1e-4f ? hlp : 1e-4f);
     g = pp_clampf(g, 0.0f, 0.99995f);
     v->loop_gain = g;
 
@@ -464,7 +493,7 @@ static void voice_configure(pp_state_t *st, pp_voice_t *v, int note, int vel) {
     /* --- damping brightness (felt + gauge) ---
      * One-pole lowpass in the loop. More felt / heavier gauge = darker and a
      * faster high-frequency roll-off (the classic "muted" prepared-piano tone). */
-    v->damp_coef = pp_clampf(0.15f + 0.75f * felt + 0.15f * gauge, 0.0f, 0.93f);
+    v->damp_coef = pp_damp_coef(felt, gauge, v->freq);
 
     /* --- dispersion / inharmonicity (stiff-string partial stretching) ---
      * Real pianos are least inharmonic in the middle and stiffer (more

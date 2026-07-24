@@ -160,6 +160,28 @@ Findings from `measure_partials.c`, which strikes a note and DFT-tracks partials
   1.025 factor on the compensation term. Net: f0 in tune, partials stretch
   monotonically sharp across ~A1–C6.
 
+## Register decay & brightness (v0.1.12)
+
+The classic Karplus-Strong trap: the loop's damping lowpass runs once per string
+period, so a *fixed* coefficient damps a note `f0` times per second — high notes
+go dark and plucky ~10x too fast. Measured in `test/measure_decay.c` (before):
+the A6 fundamental died in **0.12 s** against a ~4 s target, and A3→A6 spanned a
+43:1 decay ratio. Three coupled fixes:
+
+* **Pitch-scaled loop damping** (`pp_damp_coef`): the lowpass coefficient is
+  scaled ~`1/f0` above ~200 Hz, so the *per-second* brightness loss stays
+  comparable across the keyboard instead of exploding in the treble.
+* **Fundamental-loss compensation**: the loop gain divides out the lowpass's
+  magnitude at the fundamental, so `g` — not the incidental lowpass loss —
+  actually sets the ring time. (The pitch-scaled damping keeps `g < 1`/stable.)
+* **Gentler register slope**: ring time scales `2^((57-note)/24)` (~1.6:1 per
+  octave, matching real pianos) instead of the old `/15` (~2-3:1).
+
+After: A4/A5/A6 fundamentals ring **4.8 / 2.6 / 1.2 s** (was 2.6 / 0.7 / 0.12),
+absolute brightness now *rises* with pitch, and within-note mellowing is a
+musical ~0.7 s. Real-piano reference (Wogram, small upright): C3 ~3.8 s,
+C4-D4 ~1.7-3.3 s, G4-A4 ~0.7-2.3 s.
+
 ## Unison strings (re-enabled v0.1.11)
 
 Notes carry **1 / 2 / 3 detuned strings by register** (mono below ~E1, bichord to
