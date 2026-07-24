@@ -33,7 +33,7 @@
 #define PP_DELAY_MAX 2400
 
 /* soundboard body resonator count */
-#define PP_BODY_MODES 3
+#define PP_BODY_MODES 10
 
 /* ----------------------------------------------------------------------- *
  *  Small helpers
@@ -86,13 +86,15 @@ typedef struct {
  *  strings per note; each is a slightly-detuned copy of this.
  * ----------------------------------------------------------------------- */
 #define PP_MAX_STRINGS 3
+#define PP_DISP_STAGES 1   /* allpass -> subtle stiff-string colour (see DESIGN) */
+#define PP_COUPLING    0.005f /* unison-string bridge coupling (double decay)   */
 typedef struct {
     float buf[PP_DELAY_MAX];
     int   widx;
     float delay;           /* fractional delay (detuned per string)        */
     float gain;            /* per-string loop gain (aftersound spread)     */
     float damp_z;          /* one-pole lowpass (string damping) state      */
-    float ap_z, ap_x;      /* first-order allpass (dispersion) state       */
+    float ap_z[PP_DISP_STAGES], ap_x[PP_DISP_STAGES];  /* dispersion cascade */
     float dc_x, dc_y;      /* DC blocker in the feedback path              */
 } pp_string_t;
 
@@ -194,10 +196,11 @@ struct pp_state {
 
     pp_reverb_t rvb;
 
-    /* soundboard body resonance: a few broad low/mid resonators that colour
-     * the bus, adding the wood/air that separates a piano from a bare string */
+    /* soundboard body resonance: a modal bank approximating a piano's
+     * soundboard/body response, adding the wood/air a bare string lacks */
     float body_y1[PP_BODY_MODES], body_y2[PP_BODY_MODES];
     float body_b1[PP_BODY_MODES], body_b2[PP_BODY_MODES], body_a[PP_BODY_MODES];
+    float body_g[PP_BODY_MODES];
 
     /* master DC blocker (belt-and-suspenders after the reverb) */
     float dcx_l, dcy_l, dcx_r, dcy_r;
@@ -212,21 +215,27 @@ struct pp_state {
  *  Soundboard body resonance (a few broad 2-pole resonators)
  * ----------------------------------------------------------------------- */
 static void body_init(pp_state_t *st) {
-    /* Broad (low-Q) resonances in the low-mid, like a piano's body/soundboard.
-     * r near 0.9 keeps them broad so they colour rather than ring. */
-    static const float freqs[PP_BODY_MODES] = { 130.0f, 260.0f, 520.0f };
-    static const float rs[PP_BODY_MODES]    = { 0.90f,  0.91f,  0.90f  };
+    /* A modal bank spread across a piano soundboard's radiating range: low
+     * modes broad and strong, upper modes tighter and quieter, so the body
+     * colours the low-mid (wood/air) without a metallic ring. */
+    static const float freqs[PP_BODY_MODES] =
+        {  75.0f, 110.0f, 160.0f, 220.0f, 300.0f, 420.0f, 580.0f, 800.0f, 1150.0f, 1900.0f };
+    static const float rs[PP_BODY_MODES] =
+        { 0.86f, 0.87f, 0.88f, 0.89f, 0.90f, 0.91f, 0.90f, 0.88f, 0.85f, 0.80f };
+    static const float gs[PP_BODY_MODES] =
+        { 1.00f, 1.00f, 0.92f, 0.85f, 0.78f, 0.68f, 0.58f, 0.44f, 0.30f, 0.18f };
     for (int i = 0; i < PP_BODY_MODES; i++) {
         float w = 2.0f * (float)M_PI * freqs[i] / st->sr;
         float r = rs[i];
         st->body_b1[i] = 2.0f * r * cosf(w);
         st->body_b2[i] = -r * r;
         st->body_a[i]  = (1.0f - r);        /* rough bandpass normalisation   */
+        st->body_g[i]  = gs[i];
         st->body_y1[i] = st->body_y2[i] = 0.0f;
     }
 }
 
-/* Run the mono bus through the body resonators; returns the added colour. */
+/* Run the mono bus through the modal soundboard; returns the added colour. */
 static inline float body_process(pp_state_t *st, float x) {
     float out = 0.0f;
     for (int i = 0; i < PP_BODY_MODES; i++) {
@@ -235,7 +244,7 @@ static inline float body_process(pp_state_t *st, float x) {
                 + st->body_b2[i] * st->body_y2[i];
         st->body_y2[i] = st->body_y1[i];
         st->body_y1[i] = y;
-        out += y;
+        out += st->body_g[i] * y;
     }
     return out;
 }
@@ -373,9 +382,10 @@ static void voice_update_tone(pp_state_t *st, pp_voice_t *v) {
     g = pp_clampf(g, 0.0f, 0.99995f);
     v->loop_gain = g;
 
-    /* Companion strings ring a touch longer than the struck main string -> the
-     * piano's characteristic "double decay" / aftersound as the course beats. */
-    static const float after[PP_MAX_STRINGS] = { 0.0f, 0.10f, 0.18f };
+    /* Double decay = gentle bridge coupling (voice_tick) drains the loud common
+     * mode fast, while the differential strings, given slightly lower loss here,
+     * bleed to the bridge slowly and ring on as the quiet aftersound. */
+    static const float after[PP_MAX_STRINGS] = { 0.0f, 0.07f, 0.11f };
     for (int i = 0; i < v->nstr; i++)
         v->str[i].gain = pp_clampf(g + (1.0f - g) * after[i], 0.0f, 0.99995f);
 }
@@ -388,7 +398,8 @@ static void voice_silence(pp_voice_t *v) {
     for (int sidx = 0; sidx < PP_MAX_STRINGS; sidx++) {
         pp_string_t *s = &v->str[sidx];
         s->widx = 0; s->delay = 100.0f; s->gain = 0.0f;
-        s->damp_z = s->ap_z = s->ap_x = s->dc_x = s->dc_y = 0.0f;
+        s->damp_z = s->dc_x = s->dc_y = 0.0f;
+        for (int q = 0; q < PP_DISP_STAGES; q++) { s->ap_x[q] = s->ap_z[q] = 0.0f; }
         memset(s->buf, 0, sizeof(s->buf));
     }
     for (int i = 0; i < PP_MAX_PREP; i++) v->prep[i].active = 0;
@@ -415,8 +426,21 @@ static void voice_configure(pp_state_t *st, pp_voice_t *v, int note, int vel) {
      * faster high-frequency roll-off (the classic "muted" prepared-piano tone). */
     v->damp_coef = pp_clampf(0.15f + 0.75f * felt + 0.15f * gauge, 0.0f, 0.93f);
 
-    /* --- dispersion (stiffness / gauge -> inharmonic, bell-like partials) --- */
-    v->disp_coef = -pp_clampf(0.06f + 0.42f * gauge, 0.0f, 0.5f);
+    /* --- dispersion / inharmonicity (stiff-string partial stretching) ---
+     * Real pianos are least inharmonic in the middle and stiffer (more
+     * inharmonic) toward the bass and, especially, the treble. Model that
+     * register curve, add the Gauge (thickness) contribution, and drive a
+     * cascade of allpasses (PP_DISP_STAGES) for a stretched, singing partial
+     * series instead of a single crude bend. */
+    {
+        float bass   = pp_clampf((48.0f - note) / 40.0f, 0.0f, 1.0f);   /* .. low  */
+        float treble = pp_clampf((note - 72.0f) / 36.0f, 0.0f, 1.0f);   /* high .. */
+        float inh = 0.10f + 0.30f * bass + 0.45f * treble * treble;
+        /* Subtle stiffness colour from register + gauge. (True calibrated
+         * inharmonic *stretch* needs a proper multi-section dispersion filter
+         * and allpass interpolation -- a dedicated pass; see DESIGN roadmap.) */
+        v->disp_coef = -pp_clampf(0.06f + 0.30f * inh + 0.42f * gauge, 0.0f, 0.5f);
+    }
 
     /* --- string length / tuning ---
      * Heavier gauge lowers tension slightly (a touch flatter) and, more
@@ -425,7 +449,7 @@ static void voice_configure(pp_state_t *st, pp_voice_t *v, int note, int vel) {
      * the dispersion allpass so notes stay in tune as felt/gauge change. */
     float freq = v->freq * (1.0f - 0.010f * gauge);
     float gd_lp = v->damp_coef / (1.0f - v->damp_coef);   /* one-pole grp delay */
-    float gd_ap = 2.0f * (-v->disp_coef);                 /* allpass grp delay  */
+    float gd_ap = PP_DISP_STAGES * 2.0f * (-v->disp_coef);/* allpass grp delay  */
     float base_delay = st->sr / freq - 1.0f - gd_lp - gd_ap;
     if (base_delay < 2.0f)  base_delay = 2.0f;
     if (base_delay > (float)(PP_DELAY_MAX - 2)) base_delay = (float)(PP_DELAY_MAX - 2);
@@ -469,7 +493,12 @@ static void voice_configure(pp_state_t *st, pp_voice_t *v, int note, int vel) {
          * missing-7th notch -- the difference between a struck piano and the
          * plucked, hollow clav tone the old white-noise burst produced. */
         float *tmp = st->scratch;
-        int hw = (int)((0.05f + 0.22f * softness) * N) + 2;   /* pulse half-width */
+        /* Dynamic hammer: a harder strike (higher velocity) compresses the felt,
+         * shortening the contact -> a narrower pulse -> a brighter tone. So the
+         * effective softness shrinks with velocity, and playing harder gets
+         * brighter, not just louder (the key piano expressiveness). */
+        float eff_soft = softness * pp_lerp(1.25f, 0.45f, v->vel);
+        int hw = (int)((0.04f + 0.22f * eff_soft) * N) + 2;   /* pulse half-width */
         if (hw > N / 2) hw = N / 2;
         if (hw < 2) hw = 2;
         for (int i = 0; i < N; i++) tmp[i] = 0.0f;
@@ -494,7 +523,8 @@ static void voice_configure(pp_state_t *st, pp_voice_t *v, int note, int vel) {
             int pidx = i - d; if (pidx < 0) pidx += N;
             s->buf[i] = (tmp[i] - tmp[pidx]) * norm;
         }
-        s->damp_z = s->ap_z = s->ap_x = s->dc_x = s->dc_y = 0.0f;
+        s->damp_z = s->dc_x = s->dc_y = 0.0f;
+        for (int q = 0; q < PP_DISP_STAGES; q++) { s->ap_x[q] = s->ap_z[q] = 0.0f; }
     }
 
     /* --- decay / brightness (loop gain + damping + per-string aftersound) ---
@@ -546,6 +576,7 @@ static void voice_configure(pp_state_t *st, pp_voice_t *v, int note, int vel) {
 static inline float voice_tick(pp_state_t *st, pp_voice_t *v, float *symp_in) {
     (void)st;
     float sum = 0.0f;
+    float wr[PP_MAX_STRINGS];
 
     for (int sidx = 0; sidx < v->nstr; sidx++) {
         pp_string_t *s = &v->str[sidx];
@@ -562,9 +593,14 @@ static inline float voice_tick(pp_state_t *st, pp_voice_t *v, float *symp_in) {
         s->damp_z = pp_lerp(rdv, s->damp_z, v->damp_coef);
         float d = s->damp_z;
 
-        /* dispersion allpass -> inharmonic, stiff-string partials */
-        float ap = v->disp_coef * d + s->ap_x - v->disp_coef * s->ap_z;
-        s->ap_x = d; s->ap_z = ap;
+        /* dispersion cascade -> stiff-string inharmonic partial stretching */
+        float ap = d;
+        for (int q = 0; q < PP_DISP_STAGES; q++) {
+            float y = v->disp_coef * ap + s->ap_x[q] - v->disp_coef * s->ap_z[q];
+            s->ap_x[q] = ap;
+            s->ap_z[q] = y;
+            ap = y;
+        }
 
         float loop = ap * s->gain;
 
@@ -603,11 +639,23 @@ static inline float voice_tick(pp_state_t *st, pp_voice_t *v, float *symp_in) {
         float hp = loop - s->dc_x + 0.999f * s->dc_y;
         s->dc_x = loop; s->dc_y = hp; loop = hp;
 
-        /* write back into this string's delay line */
-        s->buf[s->widx] = loop;
-        s->widx++; if (s->widx >= PP_DELAY_MAX) s->widx = 0;
-
+        wr[sidx] = loop;   /* defer writeback until after bridge coupling */
         sum += d;
+    }
+
+    /* --- bridge coupling: the unison strings share a bridge, so their common
+     * (in-phase) motion loads it and sheds energy fast, while opposed motions
+     * barely move the bridge and ring on -- the real piano "double decay". --- */
+    if (v->nstr > 1) {
+        float bavg = 0.0f;
+        for (int i = 0; i < v->nstr; i++) bavg += wr[i];
+        bavg *= (1.0f / (float)v->nstr);
+        for (int i = 0; i < v->nstr; i++) wr[i] -= PP_COUPLING * bavg;
+    }
+    for (int i = 0; i < v->nstr; i++) {
+        pp_string_t *s = &v->str[i];
+        s->buf[s->widx] = wr[i];
+        s->widx++; if (s->widx >= PP_DELAY_MAX) s->widx = 0;
     }
 
     /* normalise for the string count, then apply the attack swell */
@@ -804,7 +852,7 @@ void pp_render_float(pp_state_t *st, float *out_l, float *out_r, int n) {
 
         /* soundboard body resonance: colour the mono sum and fold it back in,
          * adding the wood/air a bare string lacks */
-        float body = body_process(st, (mix_l + mix_r) * 0.5f) * 0.12f;
+        float body = body_process(st, (mix_l + mix_r) * 0.5f) * 0.05f;
         mix_l += body;
         mix_r += body;
 
