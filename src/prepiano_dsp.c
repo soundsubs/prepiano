@@ -591,10 +591,12 @@ static inline float voice_tick(pp_state_t *st, pp_voice_t *v, float *symp_in) {
         if (v->held && v->bow_amt > 0.001f) {
             float nz = pp_frand_bi(&v->rng);
             v->bow_lp = pp_lerp(nz, v->bow_lp, 0.6f);
-            float drive = v->bow_amt * (0.05f + 0.15f * v->vel);
-            float head = 0.30f - (loop >= 0 ? loop : -loop);   /* cap bowed level */
+            /* bow_amt drives a clearly-audible sustain: even at 50% attack the
+             * string should sing, not just whisper under the decay. */
+            float drive = v->bow_amt * (0.4f + 0.6f * v->vel);
+            float head = 0.25f - (loop >= 0 ? loop : -loop);   /* cap bowed level */
             if (head < 0.0f) head = 0.0f;
-            loop += (v->bow_lp * 0.5f + 0.5f * pp_tanhf(loop * 2.0f)) * drive * 0.08f * head;
+            loop += (v->bow_lp * 0.5f + 0.5f * pp_tanhf(loop * 2.0f)) * drive * 0.35f * head;
         }
 
         /* DC blocker in the feedback path */
