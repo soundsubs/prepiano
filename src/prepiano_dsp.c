@@ -86,7 +86,9 @@ typedef struct {
  *  strings per note; each is a slightly-detuned copy of this.
  * ----------------------------------------------------------------------- */
 #define PP_MAX_STRINGS 3
-#define PP_DISP_STAGES 1   /* allpass -> subtle stiff-string colour (see DESIGN) */
+#define PP_DISP_STAGES 8   /* max dispersion allpass sections (runtime count <=) */
+#define PP_LOOP_EXTRA  0.0 /* buffer loop delay is exactly `delay`; filters add
+                            * the rest and are compensated by phase delay below */
 #define PP_COUPLING    0.005f /* unison-string bridge coupling (double decay)   */
 #define PP_DAMPER_TOP  76      /* notes >= this have no damper (ring on release)*/
 typedef struct {
@@ -118,6 +120,7 @@ typedef struct {
     float loop_gain;       /* base < 1, sets decay (string 0)             */
     float damp_coef;       /* 0..~0.95, string brightness/felt            */
     float disp_coef;       /* allpass coefficient, string stiffness       */
+    int   disp_stages;     /* active dispersion sections (0..PP_DISP_STAGES)*/
     float pan_l, pan_r;    /* equal-power keyboard pan gains              */
 
     /* amplitude attack envelope (gentle-bow swell, 0..~5 s) */
@@ -150,12 +153,13 @@ typedef struct {
  *   trichord  (3)  : tenor+treble, ~E2 and up
  * Exact break notes vary by instrument; these are typical. */
 static int strings_for_note(int note) {
-    /* One string per note. The Move's CPU can't afford 2-3 waveguides per key
-     * at useful polyphony (its voice ceiling is tiny), and the piano tone comes
-     * from the strike model, not the unison count. Multi-string coupling can
-     * return as a low-polyphony option once it fits the budget. */
-    (void)note;
-    return 1;
+    /* Realistic unison scaling: wound monochord in the deep bass, bichord in
+     * the upper bass, trichord for the tenor up. The slightly-detuned unison
+     * strings beat against each other -> the shimmer and the piano "double
+     * decay" (bridge coupling in voice_tick) that a lone string can't produce. */
+    if (note < 40) return 1;   /* ~ below E1 : single wound string   */
+    if (note < 55) return 2;   /* ~ E1..F#2  : two strings           */
+    return 3;                  /* ~ G2 and up: three strings         */
 }
 
 /* ----------------------------------------------------------------------- *
@@ -374,6 +378,25 @@ static float mtof(int note) {   /* MIDI note -> Hz */
     return 440.0f * powf(2.0f, (note - 69) / 12.0f);
 }
 
+/* --- exact phase delays (in samples) of the loop's filters at a given
+ * angular frequency w = 2*pi*f/fs. Used to keep the FUNDAMENTAL in tune while
+ * the dispersion allpass stretches the UPPER partials sharp. Evaluating the
+ * phase delay AT the fundamental (not a DC/group-delay approximation) is what
+ * finally lets the note stay in tune as gauge/felt/register change. --- */
+static double pp_ap_phasedelay(double c, double w) {   /* (c+z^-1)/(1+c z^-1) */
+    double an = atan2(-sin(w), c + cos(w));
+    double ad = atan2(-c * sin(w), 1.0 + c * cos(w));
+    return -(an - ad) / w;              /* allpass lags -> positive delay */
+}
+static double pp_lp_phasedelay(double a, double w) {   /* (1-a)/(1-a z^-1)    */
+    return atan2(a * sin(w), 1.0 - a * cos(w)) / w;
+}
+static double pp_dc_phasedelay(double R, double w) {   /* (1-z^-1)/(1-R z^-1) */
+    double an = atan2(sin(w), 1.0 - cos(w));
+    double ad = atan2(R * sin(w), 1.0 - R * cos(w));
+    return -(an - ad) / w;              /* DC blocker leads -> negative delay */
+}
+
 /* Recompute the amplitude/brightness coefficients that CAN change mid-note
  * (felt damping, decay ring time, gauge brightness) from the current global
  * knobs, without touching delay/dispersion (which would shift pitch). Called
@@ -450,24 +473,46 @@ static void voice_configure(pp_state_t *st, pp_voice_t *v, int note, int vel) {
      * cascade of allpasses (PP_DISP_STAGES) for a stretched, singing partial
      * series instead of a single crude bend. */
     {
-        float bass   = pp_clampf((48.0f - note) / 40.0f, 0.0f, 1.0f);   /* .. low  */
-        float treble = pp_clampf((note - 72.0f) / 36.0f, 0.0f, 1.0f);   /* high .. */
-        float inh = 0.10f + 0.30f * bass + 0.45f * treble * treble;
-        /* Subtle stiffness colour from register + gauge. (True calibrated
-         * inharmonic *stretch* needs a proper multi-section dispersion filter
-         * and allpass interpolation -- a dedicated pass; see DESIGN roadmap.) */
-        v->disp_coef = -pp_clampf(0.06f + 0.30f * inh + 0.42f * gauge, 0.0f, 0.5f);
+        /* Dispersion = stiff-string inharmonicity. A NEGATIVE first-order
+         * allpass, cascaded, stretches the partials sharp (f_j = F0*sqrt(1+B*j^2)).
+         * The catch on a cheap waveguide: at very low frequency the allpass is
+         * nearly flat, so the achievable stretch peaks in the tenor and thins
+         * toward the extremes. So we drive the cascade hardest in the mid
+         * (where it lands a clean, monotonic stretch), taper it toward the bass
+         * (whose low partials read as near-harmonic anyway) and ease both the
+         * coefficient and the section count in the treble (fewer, gentler
+         * sections stay in the smooth, ripple-free region). Calibrated against
+         * test/measure_partials.c: f0 holds to ~0 cents and partials climb
+         * monotonically sharp across ~A1..C6. Gauge adds stiffness on top. */
+        /* Coefficient tracks the per-register sweet spot found by measurement:
+         * strongest in the tenor (~0.80 at C3), easing ~0.0139/semitone up so
+         * the treble stays ripple-free, and tapering gently into the deep bass.*/
+        float cmag = (note >= 48)
+                   ? 0.80f - 0.0139f * (float)(note - 48)
+                   : 0.80f - 0.0100f * (float)(48 - note);
+        cmag += 0.06f * gauge;                       /* gauge adds stiffness */
+        v->disp_coef   = -pp_clampf(cmag, 0.0f, 0.82f);
+        v->disp_stages = (note >= 70) ? 2 : 3;
     }
 
     /* --- string length / tuning ---
-     * Heavier gauge lowers tension slightly (a touch flatter) and, more
-     * importantly, stiffens the string (more inharmonicity via dispersion).
-     * Compensate the delay for the phase delay added by the loop lowpass and
-     * the dispersion allpass so notes stay in tune as felt/gauge change. */
+     * Heavier gauge lowers tension slightly (a touch flatter). The delay is set
+     * so the TOTAL loop phase delay AT the fundamental equals fs/f0 -- i.e. we
+     * subtract the exact phase delay each loop filter (damping lowpass,
+     * dispersion allpass, DC blocker) contributes at f0. That pins the
+     * fundamental in tune while the allpass still stretches the partials above
+     * it. PP_LOOP_EXTRA is the one-sample structural delay of the buffer loop. */
     float freq = v->freq * (1.0f - 0.010f * gauge);
-    float gd_lp = v->damp_coef / (1.0f - v->damp_coef);   /* one-pole grp delay */
-    float gd_ap = PP_DISP_STAGES * 2.0f * (-v->disp_coef);/* allpass grp delay  */
-    float base_delay = st->sr / freq - 1.0f - gd_lp - gd_ap;
+    double w0   = 2.0 * M_PI * (double)freq / (double)st->sr;
+    double p_lp = pp_lp_phasedelay((double)v->damp_coef, w0);
+    /* 1.025: empirical trim -- the linear-interpolated loop runs the allpass a
+     * hair "longer" than its ideal phase delay, leaving a uniform ~3.5c flat;
+     * this cancels it (verified flat across the keyboard in measure_partials). */
+    double p_ap = 1.025 * (double)v->disp_stages
+                * pp_ap_phasedelay((double)v->disp_coef, w0);
+    double p_dc = pp_dc_phasedelay(0.999, w0);
+    float base_delay = (float)((double)st->sr / freq - PP_LOOP_EXTRA
+                               - p_lp - p_ap - p_dc);
     if (base_delay < 2.0f)  base_delay = 2.0f;
     if (base_delay > (float)(PP_DELAY_MAX - 2)) base_delay = (float)(PP_DELAY_MAX - 2);
 
@@ -488,8 +533,11 @@ static void voice_configure(pp_state_t *st, pp_voice_t *v, int note, int vel) {
     if (v->nstr > PP_MAX_STRINGS) v->nstr = PP_MAX_STRINGS;
     v->out_scale = 1.0f / sqrtf((float)v->nstr);
 
-    static const float cents3[3] = { 0.0f, 2.5f, -2.5f };
-    static const float cents2[2] = { 0.0f, 2.8f };
+    /* Unison detune: the classic piano "440 / 441 / 439" spread (~+/-3.9 cents),
+     * the outer strings a touch either side of the centre string so the course
+     * beats and shimmers. */
+    static const float cents3[3] = { 0.0f, 3.9f, -3.9f };
+    static const float cents2[2] = { 0.0f, 3.9f };
     float softness = 1.0f - hammer;   /* 1 = soft felt, 0 = metal */
 
     for (int sidx = 0; sidx < v->nstr; sidx++) {
@@ -620,7 +668,7 @@ static inline float voice_tick(pp_state_t *st, pp_voice_t *v, float *symp_in) {
 
         /* dispersion cascade -> stiff-string inharmonic partial stretching */
         float ap = d;
-        for (int q = 0; q < PP_DISP_STAGES; q++) {
+        for (int q = 0; q < v->disp_stages; q++) {
             float y = v->disp_coef * ap + s->ap_x[q] - v->disp_coef * s->ap_z[q];
             s->ap_x[q] = ap;
             s->ap_z[q] = y;
@@ -902,8 +950,8 @@ void pp_render_float(pp_state_t *st, float *out_l, float *out_r, int n) {
         float hl = l - st->dcx_l + 0.999f * st->dcy_l; st->dcx_l = l; st->dcy_l = hl;
         float hr = r - st->dcx_r + 0.999f * st->dcy_r; st->dcx_r = r; st->dcy_r = hr;
 
-        out_l[f] = hl * 1.3f;
-        out_r[f] = hr * 1.3f;
+        out_l[f] = hl * 1.2f;
+        out_r[f] = hr * 1.2f;
     }
 }
 

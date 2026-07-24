@@ -133,13 +133,50 @@ non-bowed voice is culled once it drops below the noise floor. Sustain pedal
   bank is lightly damped (fb 0.99), and the mix passes a `tanh` before reverb —
   so the model can't run away. Verified: 23 s tour renders finite, peak 0.76,
   0.00% clipping.
-* Tuning holds within ±8 cents A1–C6 (measured by autocorrelation), with the
-  loop-filter and dispersion group delays compensated in the delay length.
+* Tuning holds within **±0.6 cents A1–C7** (measured by DFT partial-tracking in
+  `test/measure_partials.c`), down from ±8. The delay length subtracts the
+  **exact phase delay each loop filter contributes _at the fundamental_** — the
+  damping lowpass, the dispersion allpass cascade, and the DC blocker — instead
+  of a DC group-delay approximation. Removing the stale `-1` structural offset
+  and evaluating phase delay at f0 is what pinned the pitch across the register.
 
-## What's deliberately simple in v0.1 (and where to go next)
+## Inharmonicity (v0.1.11 rework)
 
-* **Single dispersion allpass** per voice. A cascade of 2–4 would give more
-  accurate high-register inharmonicity; easy to extend `voice_tick`.
+Real stiff-string stretch — `f_j = F0·√(1 + B·j²)` — comes from a **cascade of
+first-order allpasses with a _negative_ coefficient** in the loop (2–3 sections).
+Findings from `measure_partials.c`, which strikes a note and DFT-tracks partials
+1–12:
+
+* A single weak allpass does **nothing** audible: piano partials sit in the low-ω
+  region where a first-order allpass is nearly flat, and the linear-interpolated
+  fractional delay actively *compresses* partials. You need enough sections and
+  strength to overcome the interpolator and net a *stretch*.
+* Identical strong sections *ripple* (non-monotonic) once the partials climb into
+  the steep part of the allpass phase curve. So the coefficient is scaled by
+  register: strongest in the tenor (~0.80 at C3, a clean monotonic stretch),
+  easing ~0.0139/semitone into the treble (fewer, gentler sections stay smooth),
+  tapering into the deep bass (whose low partials read near-harmonic anyway).
+* A uniform ~3.5-cent flat offset from the interpolated allpass is trimmed with a
+  1.025 factor on the compensation term. Net: f0 in tune, partials stretch
+  monotonically sharp across ~A1–C6.
+
+## Unison strings (re-enabled v0.1.11)
+
+Notes carry **1 / 2 / 3 detuned strings by register** (mono below ~E1, bichord to
+~F♯2, trichord above), each a `440 / 441 / 439`-style **±3.9-cent** spread. They
+beat → shimmer, and the **bridge coupling** in `voice_tick` drains the in-phase
+common mode fast while the opposed modes ring on — the piano "double decay". Cost
+is modest: reverb/sympathetic/body dominate, so 8 trichord voices still render
+~142× realtime on x86 (≈4× on the Move); default polyphony stays at 6.
+
+## What's deliberately simple (and where to go next)
+
+* **Bass low-partials read slightly flat** (the linear interpolator wins at
+  ultra-low ω). An **allpass fractional-delay interpolator** would remove that
+  compression and let the bass stretch too.
+* **Dispersion cascade is identical-section.** A purpose-designed high-order
+  (Rauhala–Välimäki) allpass would match the target B curve more accurately,
+  especially in the treble; more CPU per string.
 * **Sympathetic bank is a fixed tuned set**, not true string-to-string coupling.
   A coupled-waveguide version would resonate the *actual* held notes.
 * **Two-stage hammer** (felt↔metal as a spectral morph). A real nonlinear

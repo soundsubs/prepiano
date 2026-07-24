@@ -3,8 +3,24 @@ CC      ?= cc
 CFLAGS  ?= -O3 -Wall -Wextra -Isrc
 LDLIBS  ?= -lm
 
-.PHONY: all demo plugin clean
+.PHONY: all demo plugin clean tools showcase
 all: demo plugin
+
+# Analysis / verification harnesses
+tools: build/measure build/bench
+build/measure: test/measure_partials.c src/prepiano_dsp.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) -o $@ test/measure_partials.c src/prepiano_dsp.c $(LDLIBS)
+build/bench: test/bench.c src/prepiano_dsp.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) -o $@ test/bench.c src/prepiano_dsp.c $(LDLIBS)
+
+# Focused showcase of inharmonicity + detuned unisons
+showcase: build/showcase
+	./build/showcase build/prepiano_showcase.wav
+build/showcase: test/render_showcase.c src/prepiano_dsp.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) -o $@ test/render_showcase.c src/prepiano_dsp.c $(LDLIBS)
 
 # Desktop renderer + demo WAV
 demo: build/prepiano_demo
